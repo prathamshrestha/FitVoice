@@ -1,0 +1,93 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 6%;
+    --foreground: 0 0% 98%;
+
+    --card: 222 44% 9%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 222 44% 9%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 40% 13%;
+    --secondary-foreground: 215 20% 80%;
+
+    --muted: 220 35% 12%;
+    --muted-foreground: 215 15% 55%;
+
+    --accent: 217 91% 60%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 30% 16%;
+    --input: 220 30% 16%;
+    --ring: 217 91% 60%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 222 44% 9%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 217 91% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 40% 13%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 220 30% 16%;
+    --sidebar-ring: 217 91% 60%;
+
+    --neon-glow: 0 0 20px hsl(217 91% 60% / 0.3), 0 0 40px hsl(217 91% 60% / 0.1);
+    --neon-glow-strong: 0 0 20px hsl(217 91% 60% / 0.5), 0 0 60px hsl(217 91% 60% / 0.2);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-family: 'Space Grotesk', sans-serif;
+  }
+}
+
+@layer utilities {
+  .neon-glow {
+    box-shadow: var(--neon-glow);
+  }
+  .neon-glow-strong {
+    box-shadow: var(--neon-glow-strong);
+  }
+  .text-glow {
+    text-shadow: 0 0 10px hsl(217 91% 60% / 0.5);
+  }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 0.4; }
+  100% { transform: scale(1); opacity: 0.8; }
+}
+
+@keyframes waveform {
+  0%, 100% { height: 12px; }
+  50% { height: 32px; }
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 1.5s ease-in-out infinite;
+}
+
+.animate-waveform {
+  animation: waveform 0.8s ease-in-out infinite;
+}

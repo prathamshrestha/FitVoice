@@ -1,0 +1,20 @@
+.git
+__pycache__/
+*.pyc
+*.ipynb
+.env
+venv/
+.venv/
+dist/
+build/
+tmp/
+debug_audio.wav
+
+# big artifacts
+**/*.pt
+**/*.pth
+**/*.bin
+**/*.safetensors
+
+# but keep the ones you load at runtime:
+!app/models/**
