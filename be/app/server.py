@@ -23,13 +23,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 asr_model = whisper.load_model("tiny", device="cpu")  # now cached by Docker build
 
 emotion_model = Wav2Vec2ForSequenceClassification.from_pretrained(
-    "app/models/emotion_model", local_files_only=True
+    "superb/wav2vec2-base-superb-ks"
 ).to(device).eval()
 id2label = emotion_model.config.id2label
 
-tokenizer = AutoTokenizer.from_pretrained("app/models/TinyLlama")
+tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
 llm_model = AutoModelForCausalLM.from_pretrained(
-    "app/models/TinyLlama",
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     device_map="auto",
     torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
 )

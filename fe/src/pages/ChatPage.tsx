@@ -1,43 +1,25 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Send, Search, Plus, MessageSquare, PanelLeftClose, PanelLeft, Clock } from 'lucide-react';
+import { Send, Search, Plus, MessageSquare, PanelLeftClose, PanelLeft, Clock, AlertCircle, X } from 'lucide-react';
 import { ChatMessage } from '@/components/ChatMessage';
 import { VoiceButton } from '@/components/VoiceButton';
 import { WaveformVisualizer } from '@/components/WaveformVisualizer';
-import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
-import { useTextToSpeech } from '@/hooks/useTextToSpeech';
+import { useVoiceChat } from '@/hooks/useVoiceChat';
 import { useChatStore, type ChatSession } from '@/stores/chatStore';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
-async function getAIResponse(messages: { role: string; content: string }[]): Promise<string> {
-  const lastMsg = messages[messages.length - 1]?.content.toLowerCase() || '';
-  await new Promise(r => setTimeout(r, 800));
-
-  if (lastMsg.includes('egg') || lastMsg.includes('oatmeal') || lastMsg.includes('breakfast')) {
-    return `Great breakfast choice! Here's the nutritional breakdown:\n\n🥚 **2 Boiled Eggs**\n- Calories: ~140 kcal\n- Protein: 12g\n- Fat: 10g\n\n🥣 **1 Bowl of Oatmeal** (~1 cup cooked)\n- Calories: ~150 kcal\n- Protein: 5g\n- Carbs: 27g\n- Fiber: 4g\n\n**Total: ~290 kcal | 17g protein | 4g fiber**\n\nThis is a solid, balanced breakfast! 💪`;
-  }
-  if (lastMsg.includes('fiber')) {
-    return `One cup of cooked oatmeal contains approximately **4g of fiber**, which is about **14% of your daily recommended intake** (28g/day).\n\nTo boost fiber, you can add:\n- 🫐 Blueberries (+1.8g)\n- 🥜 Chia seeds (+5g per tbsp)\n- 🍌 Banana (+3g)\n\nWant me to suggest a high-fiber meal plan?`;
-  }
-  if (lastMsg.includes('workout') || lastMsg.includes('gym') || lastMsg.includes('exercise') || lastMsg.includes('recommend')) {
-    return `### 🏋️ Full Body Workout (45 min)\n\n**Warm-up** (5 min)\n- Jumping jacks, arm circles\n\n**Strength** (30 min)\n1. Squats — 3×12\n2. Push-ups — 3×15\n3. Dumbbell rows — 3×10\n4. Lunges — 3×10 each leg\n5. Plank — 3×45s\n\n**Cool-down** (10 min)\n- Stretching + deep breathing\n\nPairs well with a protein-rich meal! 🔥`;
-  }
-  return `I'm here to help with your fitness and nutrition goals! You can ask me about:\n\n- 🍽️ **Meal nutrition** — "What's in 2 eggs and oatmeal?"\n- 🏋️ **Workouts** — "Recommend a workout routine"\n- 💊 **Health tips** — "How can I get more fiber?"\n- 📊 **Calorie tracking** — "How many calories in my lunch?"\n\nJust speak or type your question!`;
-}
-
 export default function ChatPage() {
   const [searchParams] = useSearchParams();
   const { sessions, activeSessionId, createSession, addMessage, setActiveSessionId } = useChatStore();
   const [textInput, setTextInput] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarSearch, setSidebarSearch] = useState('');
+  const [transcript, setTranscript] = useState('');
+  const [emotion, setEmotion] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  const { isListening, transcript, startListening, stopListening } = useSpeechRecognition();
-  const { isSpeaking, speak, stop: stopSpeaking } = useTextToSpeech();
+  const [dismissedError, setDismissedError] = useState(false);
 
   // Initialize session from URL or create new
   useEffect(() => {
@@ -62,41 +44,74 @@ export default function ChatPage() {
     }
   }, [currentSession?.messages]);
 
-  const sendMessage = useCallback(async (content: string) => {
-    if (!content.trim() || isProcessing || !activeSessionId) return;
-
-    addMessage(activeSessionId, { role: 'user', content: content.trim() });
-    setIsProcessing(true);
-
-    try {
-      const session = sessions.find(s => s.id === activeSessionId);
-      const history = session ? session.messages.map(m => ({ role: m.role, content: m.content })) : [];
-      history.push({ role: 'user', content: content.trim() });
-
-      const response = await getAIResponse(history);
-      addMessage(activeSessionId, { role: 'assistant', content: response });
-      speak(response.replace(/[*#🥚🥣💪🫐🥜🍌🏋️🔥🍽️💊📊]/g, '').replace(/\n/g, '. '));
-    } catch {
-      addMessage(activeSessionId, { role: 'assistant', content: "Sorry, I couldn't process that. Please try again!" });
-    } finally {
-      setIsProcessing(false);
+// Use voice chat hook for backend integration
+  const handleTranscription = useCallback((text: string) => {
+    setTranscript(text);
+    // Automatically add user's transcribed message to chat
+    if (activeSessionId) {
+      addMessage(activeSessionId, { role: 'user', content: text });
     }
-  }, [activeSessionId, isProcessing, sessions, addMessage, speak]);
+  }, [activeSessionId, addMessage]);
+
+  const handleEmotion = useCallback((emo: string) => {
+    setEmotion(emo);
+  }, []);
+
+  const handleResponse = useCallback((response: string) => {
+    // Add assistant's response to chat
+    if (activeSessionId) {
+      addMessage(activeSessionId, { role: 'assistant', content: response });
+    }
+  }, [activeSessionId, addMessage]);
+
+  const handleError = useCallback((err: string) => {
+    console.error('Voice error:', err);
+    if (activeSessionId) {
+      addMessage(activeSessionId, {
+        role: 'assistant',
+        content: `❌ Voice error: ${err}`,
+      });
+    }
+  }, [activeSessionId, addMessage]);
+
+  // Memoize options to prevent hook re-runs
+  const voiceChatOptions = useMemo(
+    () => ({
+      onTranscription: handleTranscription,
+      onEmotion: handleEmotion,
+      onResponse: handleResponse,
+      onError: handleError,
+    }),
+    [handleTranscription, handleEmotion, handleResponse, handleError]
+  );
+
+  const {
+    isListening,
+    isProcessing: isVoiceProcessing,
+    error: voiceError,
+    startListening,
+    stopListening,
+  } = useVoiceChat(voiceChatOptions);
 
   const handleVoiceToggle = useCallback(() => {
     if (isListening) {
       stopListening();
-      if (transcript.trim()) sendMessage(transcript);
     } else {
-      stopSpeaking();
+      setDismissedError(false); // Reset error when trying again
+      setTranscript('');
+      setEmotion(null);
       startListening();
     }
-  }, [isListening, transcript, stopListening, startListening, sendMessage, stopSpeaking]);
+  }, [isListening, startListening, stopListening]);
 
   const handleTextSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    sendMessage(textInput);
-    setTextInput('');
+    if (textInput.trim() && activeSessionId) {
+      // Add user message to chat
+      addMessage(activeSessionId, { role: 'user', content: textInput.trim() });
+      setTextInput('');
+      // TODO: Send text message to backend if text-to-speech is needed
+    }
   };
 
   const formatDate = (date: Date) => {
@@ -181,7 +196,7 @@ export default function ChatPage() {
             {currentSession?.messages.map(msg => (
               <ChatMessage key={msg.id} message={{ ...msg, timestamp: new Date(msg.timestamp) }} />
             ))}
-            {isProcessing && (
+            {isVoiceProcessing && (
               <div className="flex gap-3">
                 <div className="w-8 h-8 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center">
                   <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
@@ -202,24 +217,54 @@ export default function ChatPage() {
         {isListening && transcript && (
           <div className="px-6 py-2 bg-card/80 border-t border-border">
             <p className="text-sm text-muted-foreground italic truncate max-w-2xl mx-auto">"{transcript}"</p>
+            {emotion && <p className="text-xs text-muted-foreground mt-1">Detected emotion: {emotion}</p>}
           </div>
         )}
 
         {/* Input area */}
         <div className="border-t border-border bg-card/30 backdrop-blur-md px-6 py-4">
           <div className="max-w-2xl mx-auto">
-            <WaveformVisualizer active={isListening || isSpeaking} />
+            {/* Error Banner */}
+            {voiceError && !dismissedError && (
+              <div className="bg-destructive/10 border border-destructive/30 rounded-lg px-4 py-3 mb-3 flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-destructive font-medium">Microphone Error</p>
+                  <p className="text-xs text-destructive/80 mt-1">{voiceError}</p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    💡 <strong>Tip:</strong> Make sure to grant microphone permission in your browser settings. Refresh the page and try again.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setDismissedError(true)}
+                  className="flex-shrink-0 text-destructive/60 hover:text-destructive transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            <WaveformVisualizer active={isListening || isVoiceProcessing} />
             <div className="flex items-center gap-4 mt-2">
-              <VoiceButton isListening={isListening} isSpeaking={isSpeaking} onToggle={handleVoiceToggle} />
+              <VoiceButton
+                isListening={isListening}
+                isSpeaking={isVoiceProcessing}
+                onToggle={handleVoiceToggle}
+              />
               <form onSubmit={handleTextSubmit} className="flex-1 flex gap-2">
                 <Input
                   value={textInput}
                   onChange={e => setTextInput(e.target.value)}
                   placeholder="Type your question..."
                   className="bg-secondary border-border text-foreground placeholder:text-muted-foreground"
-                  disabled={isProcessing}
+                  disabled={isListening}
                 />
-                <Button type="submit" size="icon" disabled={!textInput.trim() || isProcessing} className="bg-primary text-primary-foreground hover:bg-primary/80 shrink-0">
+                <Button
+                  type="submit"
+                  size="icon"
+                  disabled={!textInput.trim() || isListening}
+                  className="bg-primary text-primary-foreground hover:bg-primary/80 shrink-0"
+                >
                   <Send className="w-4 h-4" />
                 </Button>
               </form>
