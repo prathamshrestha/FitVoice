@@ -35,9 +35,14 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
           options.onResponse(data.llm_response);
         }
 
-        // Play audio response
+        // Play audio response (pause microphone capture during playback)
         if (data.audio) {
-          await playAudioResponse(data.audio);
+          voiceApi.pauseAudioCapture();
+          try {
+            await playAudioResponse(data.audio);
+          } finally {
+            voiceApi.resumeAudioCapture();
+          }
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -76,22 +81,30 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
 
   const startListening = useCallback(async () => {
     try {
+      console.log('🎤 startListening called');
       setError(null);
       
       // Only connect if not already connected
       if (!isConnected) {
+        console.log('🔌 Connecting to voice API...');
         await voiceApi.connect();
         setIsConnected(true);
+        console.log('✅ Voice API connected');
+      } else {
+        console.log('✅ Already connected to voice API');
       }
 
       // Start capturing and sending audio
+      console.log('🎙️ Starting audio capture...');
       await voiceApi.startAudioCapture((audioChunk) => {
         voiceApi.sendAudio(audioChunk);
       });
+      console.log('✅ Audio capture started');
 
       setIsListening(true);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error('❌ Voice error:', errorMsg);
       setError(errorMsg);
       if (options.onError) {
         options.onError(errorMsg);

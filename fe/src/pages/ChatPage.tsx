@@ -94,9 +94,12 @@ export default function ChatPage() {
   } = useVoiceChat(voiceChatOptions);
 
   const handleVoiceToggle = useCallback(() => {
+    console.log('🔽 Voice button clicked, isListening:', isListening);
     if (isListening) {
+      console.log('⏹️ Stopping voice listener');
       stopListening();
     } else {
+      console.log('▶️ Starting voice listener');
       setDismissedError(false); // Reset error when trying again
       setTranscript('');
       setEmotion(null);

@@ -18,6 +18,8 @@ export interface VoiceApiClient {
   onMessage: (callback: (data: VoiceResponse) => void) => void;
   onError: (callback: (error: string) => void) => void;
   ping: () => void;
+  pauseAudioCapture: () => void;
+  resumeAudioCapture: () => void;
 }
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:8000";
@@ -32,14 +34,29 @@ class VoiceApiClientImpl implements VoiceApiClient {
   private mediaStream: MediaStream | null = null;
   private processor: ScriptProcessorNode | null = null;
   private isRecording = false;
+  private isAudioPaused = false;
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(`${WS_URL}/ws`);
+        const wsUrl = `${WS_URL}/ws`;
+        console.log(`📍 Attempting WebSocket connection to: ${wsUrl}`);
+        
+        this.ws = new WebSocket(wsUrl);
         this.ws.binaryType = "arraybuffer";
 
+        // Set connection timeout
+        const timeout = setTimeout(() => {
+          console.error(`❌ WebSocket connection timeout after 10 seconds. Backend unreachable at ${wsUrl}`);
+          if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+          }
+          reject(new Error(`Connection timeout - backend unreachable at ${wsUrl}. Make sure backend is running on port 8000.`));
+        }, 10000);
+
         this.ws.onopen = () => {
+          clearTimeout(timeout);
           console.log("✅ Connected to voice API");
           resolve();
         };
@@ -61,16 +78,19 @@ class VoiceApiClientImpl implements VoiceApiClient {
         };
 
         this.ws.onerror = (error) => {
-          console.error("WebSocket error:", error);
-          this.errorCallbacks.forEach((cb) => cb("Connection error"));
+          clearTimeout(timeout);
+          console.error("❌ WebSocket error:", error);
+          this.errorCallbacks.forEach((cb) => cb("Connection failed - check if backend is running on port 8000"));
           reject(error);
         };
 
         this.ws.onclose = () => {
-          console.log("Disconnected from voice API");
+          clearTimeout(timeout);
+          console.log("⚠️ Disconnected from voice API");
           this.cleanup();
         };
       } catch (error) {
+        console.error("❌ WebSocket creation error:", error);
         reject(error);
       }
     });
@@ -117,6 +137,16 @@ class VoiceApiClientImpl implements VoiceApiClient {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send("ping");
     }
+  }
+
+  pauseAudioCapture(): void {
+    console.log('⏸️ Pausing audio capture (playing AI response)');
+    this.isAudioPaused = true;
+  }
+
+  resumeAudioCapture(): void {
+    console.log('▶️ Resuming audio capture');
+    this.isAudioPaused = false;
   }
 
   /**
@@ -216,6 +246,11 @@ class VoiceApiClientImpl implements VoiceApiClient {
       // Step 6: Set up audio processing
       console.log('📍 Setting up audio processing...');
       this.processor.onaudioprocess = (event) => {
+        // Skip sending audio if capture is paused (e.g., during AI playback)
+        if (this.isAudioPaused) {
+          return;
+        }
+
         const inputData = event.inputBuffer.getChannelData(0);
         const int16Data = new Int16Array(inputData.length);
 
