@@ -1,39 +1,56 @@
 """
-Fitness LLM Inference Utility
-Loads fine-tuned fitness model and generates responses with user context.
+Fitness LLM Inference Utility with RAG
+Loads fine-tuned fitness model and generates responses with user context and retrieved knowledge.
 """
 
 import sys
 import torch
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
-# Add app directory to path to support both relative and direct imports
+# Add app and parent directory to path to support both relative and direct imports
 _app_dir = Path(__file__).parent
+_parent_dir = _app_dir.parent
 if str(_app_dir) not in sys.path:
     sys.path.insert(0, str(_app_dir))
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
 
 try:
     # Try relative imports first (when run as module)
     from .user_profile import UserProfile, get_goal_specific_system_prompt
 except ImportError:
     # Fallback to absolute imports (when running from app directory)
-    from user_profile import UserProfile, get_goal_specific_system_prompt
+    try:
+        from user_profile import UserProfile, get_goal_specific_system_prompt
+    except ImportError:
+        from app.user_profile import UserProfile, get_goal_specific_system_prompt
+
+# Try to import RAG system
+try:
+    from fitness_rag_system import HybridFitnessRAG
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+    print("⚠️ RAG system not available. Install dependencies: pip install chromadb sentence-transformers")
 
 
 class FitnessLLMInference:
-    """Inference engine for fitness-specific LLM."""
+    """Inference engine for fitness-specific LLM with RAG support."""
     
     def __init__(
         self,
         base_model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         lora_weights_path: Optional[str] = None,
         device: str = None,
+        use_rag: bool = True,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.lora_weights_path = lora_weights_path
+        self.use_rag = use_rag and RAG_AVAILABLE
+        self.rag = None
         
         print(f"🤖 Loading fitness LLM on {self.device}...")
         
@@ -56,6 +73,45 @@ class FitnessLLMInference:
         
         self.model.eval()
         print("✅ Model loaded successfully")
+        
+        # Initialize RAG system if available
+        if self.use_rag:
+            self._initialize_rag()
+    
+    def _initialize_rag(self):
+        """Initialize RAG system for knowledge retrieval"""
+        try:
+            print("🔄 Initializing RAG system...")
+            # Look for knowledge base in parent directory
+            kb_path = Path(_parent_dir) / "fitness_knowledge_base.jsonl"
+            qa_path = Path(_parent_dir) / "training_data" / "fitness_data.jsonl"
+            
+            if not kb_path.exists():
+                print(f"⚠️ Knowledge base not found at {kb_path}")
+                print("   Generate it with: python fitness_knowledge_base.py")
+                return
+            
+            self.rag = HybridFitnessRAG(
+                knowledge_base_path=str(kb_path),
+                qa_pairs_path=str(qa_path) if qa_path.exists() else None
+            )
+            self.rag.load_knowledge_base()
+            print("✅ RAG system initialized")
+        except Exception as e:
+            print(f"⚠️ Failed to initialize RAG: {e}")
+            self.rag = None
+    
+    def _retrieve_context(self, query: str) -> str:
+        """Retrieve relevant fitness knowledge using RAG"""
+        if not self.rag or not self.use_rag:
+            return ""
+        
+        try:
+            context, _ = self.rag.retrieve_hybrid(query, kb_top_k=3, qa_top_k=2)
+            return context
+        except Exception as e:
+            print(f"⚠️ RAG retrieval failed: {e}")
+            return ""
     
     def generate_fitness_advice(
         self,
@@ -64,8 +120,9 @@ class FitnessLLMInference:
         max_new_tokens: int = 50,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        use_rag: bool = True,
     ) -> str:
-        """Generate fitness advice for a user query with optional profile context."""
+        """Generate fitness advice for a user query with optional profile context and RAG."""
         
         # Create context-aware system prompt
         if user_profile:
@@ -74,6 +131,13 @@ class FitnessLLMInference:
             system_prompt = """You are a knowledgeable and friendly fitness coach.
 Provide safe, evidence-based fitness advice for all fitness levels and goals.
 Always consider the user's health and safety in your recommendations."""
+        
+        # Retrieve knowledge context if RAG enabled
+        knowledge_context = ""
+        if use_rag and self.rag:
+            knowledge_context = self._retrieve_context(query)
+            if knowledge_context:
+                system_prompt += f"\n\n{knowledge_context}"
         
         # Build the full prompt
         prompt = f"<|system|>\n{system_prompt}\n<|user|>\n{query}\n<|assistant|>\n"

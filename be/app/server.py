@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import soundfile as sf
-import torch, whisper
+import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from transformers import Wav2Vec2ForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
@@ -20,10 +20,12 @@ try:
     # Try relative imports first (when run as module)
     from .user_profile import UserProfileManager, FitnessGoal, get_goal_specific_system_prompt
     from .fitness_llm_inference import FitnessLLMInference
+    from .google_asr import GoogleASR
 except ImportError:
     # Fallback to absolute imports (when running from app directory)
     from user_profile import UserProfileManager, FitnessGoal, get_goal_specific_system_prompt
     from fitness_llm_inference import FitnessLLMInference
+    from google_asr import GoogleASR
 
 
 SAMPLE_RATE = 16000
@@ -36,8 +38,8 @@ RMS_THRESHOLD = 0.015
 app = FastAPI()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# --- Lazy init heavy models (avoid blocking import time) ---
-asr_model = whisper.load_model("tiny", device="cpu")  # now cached by Docker build
+# --- ASR: Google Cloud Speech-to-Text ---
+asr = GoogleASR(language_code="en-US", sample_rate=SAMPLE_RATE)
 
 emotion_model = Wav2Vec2ForSequenceClassification.from_pretrained(
     "superb/wav2vec2-base-superb-ks"
@@ -83,9 +85,9 @@ def get_tts():
 
 sample_rate = 16000
 
-async def whisper_transcribe_np(audio_np: np.ndarray):
-    # CPU-bound; run in a thread
-    return await asyncio.to_thread(asr_model.transcribe, audio_np, fp16=False)
+async def google_transcribe(audio_bytes: bytes) -> str:
+    """Transcribe audio bytes using Google Cloud Speech-to-Text."""
+    return await asr.transcribe_async(audio_bytes)
 
 def _is_silent(frame_bytes, threshold=0.6):
     audio = np.frombuffer(frame_bytes, dtype=np.int16).astype(np.float32) / 32768.0
@@ -145,17 +147,14 @@ async def process_utterance(buffer: bytes, websocket: WebSocket, stop_flag: asyn
     if stop_flag.is_set() or not buffer:
         return
 
-    # Convert directly to float32 in [-1,1] and feed Whisper (no temp file)
+    # Quick silence guard (check RMS on raw PCM)
     audio_f32 = np.frombuffer(buffer, dtype=np.int16).astype(np.float32) / 32768.0
-
-    # Quick silence guard
     if float(np.sqrt(np.mean(audio_f32 ** 2))) < RMS_THRESHOLD:
         return
 
-    # ASR (avoid fp16 on CPU)
+    # ASR — Google Cloud Speech-to-Text (pass raw Int16 PCM bytes)
     try:
-        result = asr_model.transcribe(audio_f32, fp16=torch.cuda.is_available())
-        transcription = (result.get("text") or "").strip()
+        transcription = await asr.transcribe_async(buffer)
         if not transcription or stop_flag.is_set():
             return
     except Exception as e:
@@ -362,7 +361,7 @@ def health_check():
             "rms_threshold": RMS_THRESHOLD,
         },
         "models": {
-            "asr": "Whisper (tiny)",
+            "asr": "Google Cloud STT",
             "emotion": "Wav2Vec2 (superb)",
             "llm": "TinyLlama-1.1B",
             "tts": "VITS" if get_tts() is not None else "VITS (unavailable)"
@@ -378,9 +377,8 @@ def test_audio_chunk(audio_data: bytes):
         is_silent_result = is_silent(audio_data)
         rms_value = rms(audio_data)
         
-        # Test with Whisper
-        audio_f32 = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-        transcription = asr_model.transcribe(audio_f32, fp16=torch.cuda.is_available())
+        # Test with Google Cloud STT
+        transcription = asr.transcribe(audio_data)
         
         return {
             "status": "ok",
@@ -389,7 +387,7 @@ def test_audio_chunk(audio_data: bytes):
             "rms": float(rms_value),
             "rms_threshold": RMS_THRESHOLD,
             "is_silent": is_silent_result,
-            "transcription": transcription.get("text", "").strip()
+            "transcription": transcription
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
