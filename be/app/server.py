@@ -7,8 +7,7 @@ import torch
 import whisper
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from transformers import Wav2Vec2ForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
-from torch.nn.functional import softmax
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from TTS.api import TTS
 from typing import Tuple, Optional
 
@@ -31,7 +30,7 @@ except ImportError:
 
 SAMPLE_RATE = 16000
 MIN_UTTERANCE_SEC = 2.0          # process as soon as ~2s of audio is collected
-SILENCE_GAP_SEC = 1.0            # consider utterance ended after 1.0s of silence
+SILENCE_GAP_SEC = 1.5            # consider utterance ended after 1.5s of silence
 IDLE_CLOSE_SEC = 180.0
 MAX_BUFFER_SEC = 15.0
 RMS_THRESHOLD = 0.015  
@@ -74,10 +73,7 @@ async def transcribe_audio(audio_buffer: bytes) -> str:
         result = await asyncio.to_thread(model.transcribe, audio_f32, fp16=torch.cuda.is_available())
         return (result.get("text") or "").strip()
 
-emotion_model = Wav2Vec2ForSequenceClassification.from_pretrained(
-    "superb/wav2vec2-base-superb-ks"
-).to(device).eval()
-id2label = emotion_model.config.id2label
+
 
 tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
 llm_model = AutoModelForCausalLM.from_pretrained(
@@ -129,10 +125,11 @@ def _is_silent(frame_bytes, threshold=0.6):
     rms = (np.mean(audio**2) ** 0.5)
     return rms < threshold
 
-def generate_response(prompt: str, stop_flag: asyncio.Event, user_id: Optional[str] = None) -> str:
-    """Generate fitness-specific response using fine-tuned model."""
+def generate_response(prompt: str, stop_flag: asyncio.Event, user_id: Optional[str] = None) -> tuple:
+    """Generate fitness-specific response using fine-tuned model.
+    Returns (response_text, rag_debug_dict)"""
     if stop_flag.is_set():
-        return ""
+        return "", {}
     
     try:
         # Get user profile if user_id provided
@@ -140,33 +137,40 @@ def generate_response(prompt: str, stop_flag: asyncio.Event, user_id: Optional[s
         if user_id:
             user_profile = profile_manager.get_profile(user_id)
         
-        # Generate using fitness LLM
-        response = fitness_llm.generate_fitness_advice(
+        # Generate using fitness LLM (now returns dict)
+        result = fitness_llm.generate_fitness_advice(
             query=prompt,
             user_profile=user_profile,
-            max_new_tokens=50,
-            temperature=0.7,
+            max_new_tokens=150,
+            temperature=0.6,
         )
         
+        response = result["response"]
+        rag_debug = result["rag_debug"]
+        
         if stop_flag.is_set():
-            return ""
+            return "", {}
         
-        # Clean up response to end at sentence boundary
-        if "." in response:
-            response = response.split(".")[0] + "."
+        # Clean up response: keep all complete sentences
+        # Find the last sentence-ending punctuation and trim after it
+        last_period = -1
+        for i, ch in enumerate(response):
+            if ch in '.!?':
+                last_period = i
+        if last_period > 0:
+            response = response[:last_period + 1]
         
-        return response.strip()
+        return response.strip(), rag_debug
     
     except Exception as e:
-        print(f"❌ LLM generation error: {e}")
-        # Fallback to generic response
-        return "Thanks for your question. Please consult a fitness professional for personalized advice."
+        print(f"LLM generation error: {e}")
+        return "Thanks for your question. Please consult a fitness professional for personalized advice.", {}
 
 async def synthesize_tts(text, stop_flag: asyncio.Event):
     try:
         tts = get_tts()
         if tts is None:
-            print("❌ TTS Error: TTS system not available. Install espeak-ng to enable text-to-speech.")
+            print("TTS Error: TTS system not available. Install espeak-ng to enable text-to-speech.")
             return None
         audio_array = await asyncio.to_thread(tts.tts, text)
         if stop_flag.is_set():
@@ -175,7 +179,7 @@ async def synthesize_tts(text, stop_flag: asyncio.Event):
         sf.write(buf, np.array(audio_array), samplerate=22050, format='WAV')
         return base64.b64encode(buf.getvalue()).decode("utf-8")
     except Exception as e:
-        print("❌ TTS Error:", e)
+        print("TTS Error:", e)
         return None
 
 async def process_utterance(buffer: bytes, websocket: WebSocket, stop_flag: asyncio.Event, user_id: Optional[str] = None):
@@ -196,19 +200,8 @@ async def process_utterance(buffer: bytes, websocket: WebSocket, stop_flag: asyn
         print("ASR error:", e)
         return
 
-    # Emotion (keep your existing code, but ensure correct shape)
-    try:
-        emo_input = torch.tensor(audio_f32).unsqueeze(0).to(device)
-        with torch.no_grad():
-            emo_logits = emotion_model(emo_input).logits
-            probs = torch.softmax(emo_logits, dim=1)
-            emotion = id2label[int(torch.argmax(probs, dim=1))]
-    except Exception as e:
-        print("Emotion error:", e)
-        emotion = "neutral"
-
-    # LLM - using fitness-aware generation
-    response = generate_response(transcription, stop_flag, user_id=user_id)
+    # LLM - using fitness-aware generation (now returns rag_debug too)
+    response, rag_debug = generate_response(transcription, stop_flag, user_id=user_id)
     if stop_flag.is_set() or not response:
         return
 
@@ -219,9 +212,9 @@ async def process_utterance(buffer: bytes, websocket: WebSocket, stop_flag: asyn
 
     await websocket.send_json({
         "text": transcription,
-        "emotion": emotion,
         "llm_response": response,
         "audio": audio_base64,
+        "rag_debug": rag_debug,
     })
 
 def rms(frame_i16: bytes) -> float:
@@ -258,11 +251,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
     buf = bytearray()
     collected = 0
-    min_samples = int(SAMPLE_RATE * MIN_UTTERANCE_SEC)
-    gap_samples = int(SAMPLE_RATE * SILENCE_GAP_SEC)
+    min_samples = int(SAMPLE_RATE * 0.5)  # minimum 0.5s of voice content to process
+    gap_samples = int(SAMPLE_RATE * SILENCE_GAP_SEC)  # 1.5s silence = end of utterance
     max_samples = int(SAMPLE_RATE * MAX_BUFFER_SEC)
     # running "silence gap" in samples
     silence_gap = 0
+    voice_samples = 0  # track how many samples had actual voice
     
     # Debugging counters
     audio_chunks_received = 0
@@ -327,34 +321,42 @@ async def websocket_endpoint(websocket: WebSocket):
             else:
                 voice_chunks += 1
                 silence_gap = 0
+                voice_samples += n_samples
                 last_voice_time = now
             
-            # Log audio statistics every 10 chunks
-            if audio_chunks_received % 10 == 0:
-                print(f"📊 Audio stats - Chunks: {audio_chunks_received}, Voice: {voice_chunks}, Silent: {silent_chunks}, Collected: {collected}/{min_samples}, Gap: {silence_gap}/{gap_samples}")
+            # Log audio statistics every 20 chunks
+            if audio_chunks_received % 20 == 0:
+                print(f"Audio stats - Chunks: {audio_chunks_received}, Voice: {voice_chunks}, Silent: {silent_chunks}, Collected: {collected}, Voice: {voice_samples}, Gap: {silence_gap}/{gap_samples}")
 
             # safety: cap buffer size to last MAX_BUFFER_SEC
             if collected > max_samples:
                 buf = bytearray(buf[-max_samples * 2:])
                 collected = len(buf) // 2
 
-            # condition A: enough audio for low-latency processing
-            # condition B: end-of-utterance detected by silence gap
-            if collected >= min_samples or silence_gap >= gap_samples:
+            # Process ONLY when silence gap detected after sufficient voice
+            # This ensures the entire utterance is collected before processing
+            if silence_gap >= gap_samples and voice_samples >= min_samples:
                 chunk = bytes(buf)
                 buf.clear()
                 collected = 0
                 silence_gap = 0
+                voice_samples = 0
                 
-                # skip silent chunks
+                # skip if whole chunk is silent
                 if not is_silent(chunk):
-                    print(f"🎤 Processing utterance ({len(chunk)} bytes, {len(chunk)//2} samples)")
+                    print(f"Processing utterance ({len(chunk)} bytes, {len(chunk)//2} samples)")
                     try:
-                        # Use lock to ensure only one utterance processes at a time
                         async with processing_lock:
                             await process_utterance(chunk, websocket, stop_flag, user_id=user_id)
                     except Exception as e:
                         print("process_utterance error:", e)
+            
+            # Reset buffer if only silence (no voice content) to avoid stale data
+            elif silence_gap >= gap_samples and voice_samples < min_samples:
+                buf.clear()
+                collected = 0
+                silence_gap = 0
+                voice_samples = 0
 
             # hard idle close (nothing at all)
             if (now - last_activity) > IDLE_CLOSE_SEC:
@@ -397,7 +399,6 @@ def health_check():
         },
         "models": {
             "asr": f"{'Google Cloud STT' if asr_mode == 'google' else 'Whisper (tiny)'} [active: {asr_mode}]",
-            "emotion": "Wav2Vec2 (superb)",
             "llm": "TinyLlama-1.1B",
             "tts": "VITS" if get_tts() is not None else "VITS (unavailable)"
         }

@@ -101,17 +101,18 @@ class FitnessLLMInference:
             print(f"⚠️ Failed to initialize RAG: {e}")
             self.rag = None
     
-    def _retrieve_context(self, query: str) -> str:
-        """Retrieve relevant fitness knowledge using RAG"""
+    def _retrieve_context(self, query: str) -> Tuple[str, List[Dict]]:
+        """Retrieve relevant fitness knowledge using RAG.
+        Returns (context_string, retrieved_docs_with_scores)"""
         if not self.rag or not self.use_rag:
-            return ""
+            return "", []
         
         try:
-            context, _ = self.rag.retrieve_hybrid(query, kb_top_k=3, qa_top_k=2)
-            return context
+            context, docs = self.rag.retrieve_hybrid(query, kb_top_k=3, qa_top_k=2)
+            return context, docs
         except Exception as e:
             print(f"⚠️ RAG retrieval failed: {e}")
-            return ""
+            return "", []
     
     def generate_fitness_advice(
         self,
@@ -121,26 +122,60 @@ class FitnessLLMInference:
         temperature: float = 0.7,
         top_p: float = 0.9,
         use_rag: bool = True,
-    ) -> str:
-        """Generate fitness advice for a user query with optional profile context and RAG."""
+    ) -> Dict:
+        """Generate fitness advice for a user query with optional profile context and RAG.
+        
+        Returns:
+            dict with keys: 'response' (str), 'rag_debug' (dict with confidence info)
+        """
         
         # Create context-aware system prompt
         if user_profile:
             system_prompt = get_goal_specific_system_prompt(user_profile)
         else:
-            system_prompt = """You are a knowledgeable and friendly fitness coach.
-Provide safe, evidence-based fitness advice for all fitness levels and goals.
-Always consider the user's health and safety in your recommendations."""
+            system_prompt = (
+                "You are FitVoice, a helpful fitness and nutrition coach. "
+                "Answer the user's fitness question directly and concisely in 2-3 sentences. "
+                "If reference information is provided below, use it to give an accurate answer. "
+                "Speak naturally as if talking to someone — no bullet points or lists. "
+                "Be specific with numbers (calories, reps, sets, grams) when relevant."
+            )
         
         # Retrieve knowledge context if RAG enabled
         knowledge_context = ""
-        if use_rag and self.rag:
-            knowledge_context = self._retrieve_context(query)
-            if knowledge_context:
-                system_prompt += f"\n\n{knowledge_context}"
+        rag_debug = {
+            "rag_available": self.rag is not None,
+            "rag_used": False,
+            "num_docs": 0,
+            "sources": [],
+            "context_length": 0,
+        }
         
-        # Build the full prompt
-        prompt = f"<|system|>\n{system_prompt}\n<|user|>\n{query}\n<|assistant|>\n"
+        if use_rag and self.rag:
+            knowledge_context, retrieved_docs = self._retrieve_context(query)
+            if knowledge_context:
+                system_prompt += "\n\n" + knowledge_context
+                rag_debug["rag_used"] = True
+                rag_debug["num_docs"] = len(retrieved_docs)
+                rag_debug["context_length"] = len(knowledge_context)
+                rag_debug["sources"] = [
+                    {
+                        "title": doc.get("title", doc.get("question", "N/A"))[:80],
+                        "relevance": round(doc.get("relevance", 0), 3),
+                        "type": doc.get("source", "kb"),
+                    }
+                    for doc in retrieved_docs
+                ]
+                top_rel = retrieved_docs[0].get("relevance", 0) if retrieved_docs else 0
+                print(f"📚 RAG: {len(retrieved_docs)} docs for '{query[:50]}' (top: {top_rel:.0%})")
+            else:
+                print(f"⚠️ RAG: no relevant docs for '{query[:50]}'")
+        
+        # Build the full prompt using TinyLlama chat template
+        SYS_TAG = "<" + "|system|" + ">"
+        USR_TAG = "<" + "|user|" + ">"
+        AST_TAG = "<" + "|assistant|" + ">"
+        prompt = f"{SYS_TAG}\n{system_prompt}\n{USR_TAG}\n{query}\n{AST_TAG}\n"
         
         # Generate response
         input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
@@ -152,6 +187,7 @@ Always consider the user's health and safety in your recommendations."""
                 temperature=temperature,
                 top_p=top_p,
                 do_sample=True,
+                repetition_penalty=1.3,
                 pad_token_id=self.tokenizer.eos_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
             )
@@ -161,10 +197,10 @@ Always consider the user's health and safety in your recommendations."""
         response = full_response[len(prompt):].strip()
         
         # Clean up response
-        response = response.split("<|user|>")[0].strip()  # Remove any follow-up prompts
-        response = response.split("<|system|>")[0].strip()
+        response = response.split(USR_TAG)[0].strip()
+        response = response.split(SYS_TAG)[0].strip()
         
-        return response
+        return {"response": response, "rag_debug": rag_debug}
     
     def generate_personalized_advice(
         self,
@@ -174,14 +210,14 @@ Always consider the user's health and safety in your recommendations."""
         max_new_tokens: int = 50,
         temperature: float = 0.7,
         top_p: float = 0.9,
-    ) -> Tuple[str, UserProfile]:
+    ) -> Tuple[Dict, UserProfile]:
         """Generate advice using stored user profile."""
         
         profile = profile_manager.get_profile(user_id)
         if not profile:
             print(f"⚠️ User profile not found for {user_id}, using default behavior")
         
-        response = self.generate_fitness_advice(
+        result = self.generate_fitness_advice(
             query=query,
             user_profile=profile,
             max_new_tokens=max_new_tokens,
@@ -189,7 +225,7 @@ Always consider the user's health and safety in your recommendations."""
             top_p=top_p,
         )
         
-        return response, profile
+        return result, profile
     
     def batch_generate(
         self,
@@ -200,12 +236,12 @@ Always consider the user's health and safety in your recommendations."""
         """Generate responses for multiple queries."""
         responses = []
         for query in queries:
-            response = self.generate_fitness_advice(
+            result = self.generate_fitness_advice(
                 query=query,
                 user_profile=user_profile,
                 max_new_tokens=max_new_tokens,
             )
-            responses.append(response)
+            responses.append(result)
         return responses
 
 
@@ -261,9 +297,10 @@ if __name__ == "__main__":
     
     for query in test_queries:
         print(f"\n❓ Query: {query}")
-        response = fitness_llm.generate_fitness_advice(
+        result = fitness_llm.generate_fitness_advice(
             query=query,
             user_profile=test_profile,
-            max_length=120,
+            max_new_tokens=120,
         )
-        print(f"💭 Response: {response}\n")
+        print(f"💭 Response: {result['response']}")
+        print(f"📊 RAG Debug: {result['rag_debug']}\n")

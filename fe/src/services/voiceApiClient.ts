@@ -5,9 +5,15 @@
 
 export interface VoiceResponse {
   text: string;
-  emotion: string;
   llm_response: string;
   audio: string; // base64-encoded audio
+  rag_debug?: {
+    rag_available: boolean;
+    rag_used: boolean;
+    num_docs: number;
+    sources: Array<{ title: string; relevance: number; type: string }>;
+    context_length: number;
+  };
 }
 
 export interface VoiceApiClient {
@@ -18,8 +24,8 @@ export interface VoiceApiClient {
   onMessage: (callback: (data: VoiceResponse) => void) => void;
   onError: (callback: (error: string) => void) => void;
   ping: () => void;
-  pauseAudioCapture: () => void;
-  resumeAudioCapture: () => void;
+  setPlayingAudio: (playing: boolean) => void;
+  stopAllAudio: () => void;
 }
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:8000";
@@ -34,7 +40,8 @@ class VoiceApiClientImpl implements VoiceApiClient {
   private mediaStream: MediaStream | null = null;
   private processor: ScriptProcessorNode | null = null;
   private isRecording = false;
-  private isAudioPaused = false;
+  private isPlayingAudio = false;
+  private static readonly BARGE_IN_RMS_THRESHOLD = 0.02;
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -97,6 +104,7 @@ class VoiceApiClientImpl implements VoiceApiClient {
   }
 
   disconnect(): void {
+    audioPlayback.stopAll();
     this.cleanup();
     if (this.ws) {
       this.ws.close();
@@ -139,14 +147,15 @@ class VoiceApiClientImpl implements VoiceApiClient {
     }
   }
 
-  pauseAudioCapture(): void {
-    console.log('⏸️ Pausing audio capture (playing AI response)');
-    this.isAudioPaused = true;
+  /** Signal that TTS playback has started */
+  setPlayingAudio(playing: boolean): void {
+    this.isPlayingAudio = playing;
   }
 
-  resumeAudioCapture(): void {
-    console.log('▶️ Resuming audio capture');
-    this.isAudioPaused = false;
+  /** Stop any currently playing TTS audio (barge-in) */
+  stopAllAudio(): void {
+    audioPlayback.stopAll();
+    this.isPlayingAudio = false;
   }
 
   /**
@@ -243,17 +252,27 @@ class VoiceApiClientImpl implements VoiceApiClient {
         throw new Error('ScriptProcessor instance is null');
       }
 
-      // Step 6: Set up audio processing
+      // Step 6: Set up audio processing — always active (supports barge-in)
       console.log('📍 Setting up audio processing...');
       this.processor.onaudioprocess = (event) => {
-        // Skip sending audio if capture is paused (e.g., during AI playback)
-        if (this.isAudioPaused) {
-          return;
+        const inputData = event.inputBuffer.getChannelData(0);
+
+        // Always calculate RMS for voice activity detection
+        let sumSquares = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          sumSquares += inputData[i] * inputData[i];
+        }
+        const rms = Math.sqrt(sumSquares / inputData.length);
+
+        // Barge-in: if TTS is playing and user starts speaking, stop TTS immediately
+        if (this.isPlayingAudio && rms > VoiceApiClientImpl.BARGE_IN_RMS_THRESHOLD) {
+          console.log(`🗣️ Barge-in detected (RMS: ${rms.toFixed(3)}) — stopping TTS`);
+          audioPlayback.stopAll();
+          this.isPlayingAudio = false;
         }
 
-        const inputData = event.inputBuffer.getChannelData(0);
+        // Always convert and send audio to backend
         const int16Data = new Int16Array(inputData.length);
-
         for (let i = 0; i < inputData.length; i++) {
           int16Data[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7fff;
         }
@@ -315,28 +334,73 @@ class VoiceApiClientImpl implements VoiceApiClient {
 export const voiceApi = new VoiceApiClientImpl();
 
 /**
- * Helper function to decode base64 audio and play it
+ * Audio Playback Manager — singleton that prevents overlapping TTS audio.
+ * Stops any currently playing audio before starting new playback.
  */
-export async function playAudioResponse(base64Audio: string): Promise<void> {
-  try {
+class AudioPlaybackManager {
+  private audioContext: AudioContext | null = null;
+  private currentSource: AudioBufferSourceNode | null = null;
+
+  private getContext(): AudioContext {
+    if (!this.audioContext || this.audioContext.state === 'closed') {
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    return this.audioContext;
+  }
+
+  /** Stop any currently playing audio immediately */
+  stopAll(): void {
+    if (this.currentSource) {
+      try {
+        this.currentSource.stop();
+      } catch (_) {
+        // Already stopped
+      }
+      this.currentSource.disconnect();
+      this.currentSource = null;
+    }
+  }
+
+  /** Play base64-encoded audio, stopping any previous playback first */
+  async play(base64Audio: string): Promise<void> {
+    // Stop any currently playing audio
+    this.stopAll();
+
     const binaryString = atob(base64Audio);
     const bytes = new Uint8Array(binaryString.length);
     for (let i = 0; i < binaryString.length; i++) {
       bytes[i] = binaryString.charCodeAt(i);
     }
 
-    const audioContext = new (window.AudioContext ||
-      (window as any).webkitAudioContext)();
-    const audioBuffer = await audioContext.decodeAudioData(bytes.buffer);
+    const ctx = this.getContext();
+    const audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
 
-    const source = audioContext.createBufferSource();
+    const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
-    source.connect(audioContext.destination);
+    source.connect(ctx.destination);
+    this.currentSource = source;
     source.start(0);
 
     return new Promise((resolve) => {
-      source.onended = () => resolve();
+      source.onended = () => {
+        if (this.currentSource === source) {
+          this.currentSource = null;
+        }
+        resolve();
+      };
     });
+  }
+}
+
+const audioPlayback = new AudioPlaybackManager();
+
+/**
+ * Helper function to decode base64 audio and play it.
+ * Stops any previously playing audio first (prevents overlap).
+ */
+export async function playAudioResponse(base64Audio: string): Promise<void> {
+  try {
+    await audioPlayback.play(base64Audio);
   } catch (error) {
     console.error("Failed to play audio:", error);
     throw error;

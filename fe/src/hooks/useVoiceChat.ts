@@ -3,9 +3,9 @@ import { voiceApi, playAudioResponse, type VoiceResponse } from '@/services/voic
 
 export interface UseVoiceChatOptions {
   onTranscription?: (text: string) => void;
-  onEmotion?: (emotion: string) => void;
   onResponse?: (text: string) => void;
   onError?: (error: string) => void;
+  onRagDebug?: (debug: any) => void;
 }
 
 export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
@@ -25,9 +25,17 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
           options.onTranscription(data.text);
         }
 
-        // Notify emotion
-        if (options.onEmotion) {
-          options.onEmotion(data.emotion);
+        // Log RAG debug info to console
+        if (data.rag_debug) {
+          const rd = data.rag_debug;
+          console.log(
+            `📚 RAG: ${rd.rag_used ? '✅ USED' : '❌ NOT USED'} | ` +
+            `${rd.num_docs} docs | ${rd.context_length} chars`,
+            rd.sources
+          );
+          if (options.onRagDebug) {
+            options.onRagDebug(data.rag_debug);
+          }
         }
 
         // Notify LLM response
@@ -35,14 +43,12 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
           options.onResponse(data.llm_response);
         }
 
-        // Play audio response (pause microphone capture during playback)
+        // Play audio response (mic stays active — barge-in enabled)
         if (data.audio) {
-          voiceApi.pauseAudioCapture();
-          try {
-            await playAudioResponse(data.audio);
-          } finally {
-            voiceApi.resumeAudioCapture();
-          }
+          voiceApi.setPlayingAudio(true);
+          playAudioResponse(data.audio)
+            .catch((err) => console.error('Audio playback error:', err))
+            .finally(() => voiceApi.setPlayingAudio(false));
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);

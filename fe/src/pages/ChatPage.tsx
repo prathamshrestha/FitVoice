@@ -17,7 +17,7 @@ export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarSearch, setSidebarSearch] = useState('');
   const [transcript, setTranscript] = useState('');
-  const [emotion, setEmotion] = useState<string | null>(null);
+  const [ragDebug, setRagDebug] = useState<any>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [dismissedError, setDismissedError] = useState(false);
 
@@ -53,9 +53,7 @@ export default function ChatPage() {
     }
   }, [activeSessionId, addMessage]);
 
-  const handleEmotion = useCallback((emo: string) => {
-    setEmotion(emo);
-  }, []);
+
 
   const handleResponse = useCallback((response: string) => {
     // Add assistant's response to chat
@@ -74,15 +72,19 @@ export default function ChatPage() {
     }
   }, [activeSessionId, addMessage]);
 
+  const handleRagDebug = useCallback((debug: any) => {
+    setRagDebug(debug);
+  }, []);
+
   // Memoize options to prevent hook re-runs
   const voiceChatOptions = useMemo(
     () => ({
       onTranscription: handleTranscription,
-      onEmotion: handleEmotion,
       onResponse: handleResponse,
       onError: handleError,
+      onRagDebug: handleRagDebug,
     }),
-    [handleTranscription, handleEmotion, handleResponse, handleError]
+    [handleTranscription, handleResponse, handleError, handleRagDebug]
   );
 
   const {
@@ -91,21 +93,22 @@ export default function ChatPage() {
     error: voiceError,
     startListening,
     stopListening,
+    disconnect,
   } = useVoiceChat(voiceChatOptions);
 
   const handleVoiceToggle = useCallback(() => {
     console.log('🔽 Voice button clicked, isListening:', isListening);
     if (isListening) {
-      console.log('⏹️ Stopping voice listener');
-      stopListening();
+      console.log('⏹️ Ending call — disconnecting WebSocket + stopping audio');
+      disconnect();
     } else {
       console.log('▶️ Starting voice listener');
       setDismissedError(false); // Reset error when trying again
       setTranscript('');
-      setEmotion(null);
+      setRagDebug(null);
       startListening();
     }
-  }, [isListening, startListening, stopListening]);
+  }, [isListening, startListening, disconnect]);
 
   const handleTextSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -216,11 +219,37 @@ export default function ChatPage() {
           </div>
         </ScrollArea>
 
-        {/* Transcript */}
-        {isListening && transcript && (
+        {/* Transcript + RAG Debug */}
+        {(transcript || ragDebug) && (
           <div className="px-6 py-2 bg-card/80 border-t border-border">
-            <p className="text-sm text-muted-foreground italic truncate max-w-2xl mx-auto">"{transcript}"</p>
-            {emotion && <p className="text-xs text-muted-foreground mt-1">Detected emotion: {emotion}</p>}
+            <div className="max-w-2xl mx-auto">
+              {transcript && (
+                <p className="text-sm text-muted-foreground italic truncate">"{transcript}"</p>
+              )}
+              {ragDebug && (
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                    ragDebug.rag_used 
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                      : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                  }`}>
+                    {ragDebug.rag_used ? '✅' : '⚠️'} RAG {ragDebug.rag_used ? 'Active' : 'Inactive'}
+                  </span>
+                  {ragDebug.rag_used && (
+                    <>
+                      <span className="text-xs text-muted-foreground">
+                        {ragDebug.num_docs} docs · {ragDebug.context_length} chars
+                      </span>
+                      {ragDebug.sources?.slice(0, 3).map((src: any, i: number) => (
+                        <span key={i} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-primary/10 text-primary border border-primary/20">
+                          {Math.round(src.relevance * 100)}% {src.title.substring(0, 25)}{src.title.length > 25 ? '...' : ''}
+                        </span>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

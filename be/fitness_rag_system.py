@@ -326,21 +326,21 @@ class HybridFitnessRAG(FitnessRAGSystem):
                             'relevance': float(similarity),
                         })
         
-        # Format combined context
-        context = "📚 **Fitness Knowledge Base & Examples:**\n"
+        # Format combined context as clean plain text (no markdown — TinyLlama works better with plain text)
+        context = "Use the following reference information to answer the user's question:\n"
         
         # Add knowledge base
         if kb_docs:
-            context += "\n**Key Knowledge:**\n"
+            context += "\nRelevant fitness knowledge:\n"
             for doc in kb_docs:
-                context += f"  • **{doc['title']}**: {doc['content'][:150]}...\n"
+                context += f"- {doc['title']}: {doc['content'][:300]}\n"
         
         # Add Q&A examples
         if qa_examples:
-            context += "\n**Similar Q&A Examples:**\n"
+            context += "\nSimilar questions and answers:\n"
             for example in qa_examples:
-                context += f"  • Q: {example['question']}\n"
-                context += f"    A: {example['answer'][:150]}...\n"
+                context += f"- Question: {example['question']}\n"
+                context += f"  Answer: {example['answer'][:300]}\n"
         
         all_docs = kb_docs + qa_examples
         return context, all_docs
