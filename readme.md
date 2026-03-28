@@ -1,9 +1,8 @@
 
 # FitVoice 🤖🎙️
 
-A cutting-edge voice-powered fitness application that revolutionizes workout tracking through advanced AI speech recognition, and interactive voice feedback.
+A voice-powered fitness coaching application with real-time speech recognition, RAG-enhanced fitness advice, and interactive voice feedback.
 
-![FitVoice Demo](https://img.shields.io/badge/Status-In%20Development-orange)
 ![Python](https://img.shields.io/badge/Python-3.10-blue)
 ![React](https://img.shields.io/badge/React-18.3.1-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.116.1-green)
@@ -12,211 +11,158 @@ A cutting-edge voice-powered fitness application that revolutionizes workout tra
 ## 🌟 Key Features
 
 ### 🎯 Real-Time Voice Processing
-- **Live Speech Recognition**: Instant transcription using OpenAI Whisper (tiny model for efficiency)
-- **Voice Activity Detection**: Smart silence detection and utterance segmentation
+- **Dual ASR Backend**: Toggle between Google Cloud Speech-to-Text and OpenAI Whisper at runtime
+- **Smart Voice Activity Detection**: Silence-based utterance segmentation (1.5s gap)
+- **Barge-In Support**: Interrupt the AI mid-sentence by speaking — TTS stops immediately
 
-### 💬 Interactive Voice Chat
-- **AI-Powered Conversations**: TinyLlama LLM for contextual fitness coaching
-- **Text-to-Speech**: High-quality voice synthesis using Coqui TTS
-- **Real-time WebSocket Communication**: Seamless bidirectional audio streaming
-- **Voice Commands**: Hands-free workout control and progress tracking
+### 💬 AI Fitness Coaching
+- **RAG-Enhanced Responses**: Retrieves relevant fitness knowledge from 19,000+ Q&A pairs and curated knowledge base using ChromaDB vector search
+- **TinyLlama LLM**: Fine-tuned for fitness coaching with context-aware prompts
+- **Confidence Tracking**: RAG debug info (relevance scores, retrieved sources) visible in the UI
+- **User Profiles**: Personalized advice based on fitness goals, level, and health info
+
+### 🗣️ Text-to-Speech
+- **Coqui TTS (VITS)**: High-quality voice synthesis for natural-sounding responses
+- **Non-blocking Playback**: Audio plays without blocking the mic — enables barge-in
 
 ### 🎨 Modern Web Interface
-- **Responsive Design**: Built with React 18, TypeScript, and Tailwind CSS
-- **Component Library**: Shadcn/ui for consistent, accessible UI components
-- **Real-time Visualizations**: Waveform display for audio input feedback
-- **Multi-page Application**: Landing page, dashboard, and chat interface
-
-### 🏗️ Robust Backend Architecture
-- **FastAPI Server**: High-performance async API with WebSocket support
-- **Docker Containerization**: Complete environment with micromamba for reproducible builds
-- **Model Caching**: Pre-loaded models for instant startup
-- **GPU Acceleration**: CUDA support for faster inference on compatible hardware
+- **React 18 + TypeScript**: With Tailwind CSS and Shadcn/ui components
+- **Real-time Visualizations**: Waveform display for audio input
+- **RAG Confidence Badges**: Shows retrieved docs and relevance scores per response
+- **Chat Sessions**: Persistent conversation history with sidebar navigation
 
 ## 🛠️ Technology Stack
 
 ### Backend
-- **Python 3.10** with async programming
-- **FastAPI** for REST and WebSocket APIs
-- **Whisper** (OpenAI) for speech-to-text
-- **Wav2Vec2** (Hugging Face Transformers) 
-- **TinyLlama** for conversational AI
-- **Coqui TTS** for text-to-speech synthesis
-- **PyAudio** for audio capture and processing
-- **Docker** with micromamba for containerization
+| Component | Technology |
+|-----------|-----------|
+| API Server | FastAPI (async WebSocket + REST) |
+| ASR (Primary) | Google Cloud Speech-to-Text |
+| ASR (Fallback) | OpenAI Whisper (tiny, CPU) |
+| LLM | TinyLlama 1.1B Chat (with optional LoRA) |
+| RAG | ChromaDB + SentenceTransformers (persistent) |
+| TTS | Coqui TTS (VITS, LJSpeech) |
+| Dataset | `hammamwahab/fitness-qa` (19,743 Q&A pairs) |
 
 ### Frontend
-- **React 18** with TypeScript
-- **Vite** for fast development and building
-- **React Router** for client-side routing
-- **TanStack Query** for server state management
-- **Shadcn/ui + Radix UI** for accessible components
-- **Tailwind CSS** for styling
-- **Lucide React** for icons
-
-### Audio Processing
-- **Real-time audio streaming** via WebSocket
-- **16kHz sample rate** for optimal model performance
-- **Voice activity detection** with RMS thresholding
-- **Automatic gain control** and noise filtering
+| Component | Technology |
+|-----------|-----------|
+| Framework | React 18 + TypeScript + Vite |
+| Styling | Tailwind CSS |
+| Components | Shadcn/ui + Radix UI |
+| Audio | Web Audio API + ScriptProcessor |
+| Routing | React Router |
+| State | Zustand |
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-- Docker and Docker Compose
-- Node.js 18+ (for frontend development)
-- Python 3.10+ (optional, for local development)
+- Python 3.10+
+- Node.js 18+
+- Google Cloud credentials (`googleasr_key.json`) for Google STT
+- espeak-ng (for TTS)
 
-### Quick Start with Docker
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/prathamshrestha/FitVoice.git
-   cd FitVoice
-   ```
-
-2. **Start the backend**
-   ```bash
-   cd be
-   docker build -t fitvoice-backend .
-   docker run -p 8080:8080 fitvoice-backend
-   ```
-
-3. **Start the frontend**
-   ```bash
-   cd ../fe
-   npm install
-   npm run dev
-   ```
-
-4. **Open your browser** to `http://localhost:5173`
-
-### Local Development
-
-#### Backend Setup
+### Backend Setup
 ```bash
 cd be
-# Create conda environment
-conda env create -f environment.yml
-conda activate voicebot
 
-# Install additional dependencies
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or: venv\Scripts\activate  # Windows
+
+# Install dependencies
 pip install -r requirements.txt
 
+# Place Google ASR credentials
+cp /path/to/googleasr_key.json be/app/googleasr_key.json
+
 # Run the server
-python -m app.server
+cd app
+uvicorn server:app --reload --port 8000
 ```
 
-#### Frontend Setup
+### Frontend Setup
 ```bash
 cd fe
 npm install
 npm run dev
 ```
 
+Open `http://localhost:5173` in your browser.
+
 ## 📁 Project Structure
 
 ```
 FitVoice/
-├── be/                          # Backend (Python/FastAPI)
+├── be/                              # Backend (Python/FastAPI)
 │   ├── app/
-│   │   ├── server.py           # Main FastAPI server
-│   │   ├── asr_utils.py        # ASR utilities
-│   │   └── models/             # Pre-trained models
-│   ├── live_transcribe_emotion.py  # Real-time demo script
-│   ├── wav2vec2_inference.py   # Wav2Vec2 inference class
-│   ├── requirements.txt        # Python dependencies
-│   ├── environment.yml         # Conda environment
-│   ├── Dockerfile             # Container configuration
-│   └── voicebot.yml           # Micromamba environment
-├── fe/                         # Frontend (React/TypeScript)
+│   │   ├── server.py               # Main FastAPI server + WebSocket handler
+│   │   ├── google_asr.py           # Google Cloud STT integration
+│   │   ├── fitness_llm_inference.py # LLM inference with RAG support
+│   │   ├── user_profile.py         # User profile system
+│   │   └── googleasr_key.json      # Google credentials (gitignored)
+│   ├── fitness_rag_system.py       # ChromaDB RAG system
+│   ├── fitness_knowledge_base.py   # Knowledge base generator
+│   ├── fitness_knowledge_base.jsonl # Curated fitness knowledge (44 docs)
+│   ├── chroma_db/                  # Persistent vector database (gitignored)
+│   ├── requirements.txt
+│   └── Dockerfile
+├── fe/                              # Frontend (React/TypeScript)
 │   ├── src/
-│   │   ├── components/         # Reusable UI components
-│   │   ├── pages/             # Application pages
-│   │   ├── stores/            # State management
-│   │   └── lib/               # Utilities
-│   ├── package.json           # Node dependencies
-│   └── vite.config.ts         # Build configuration
-└── README.md                  # This file
+│   │   ├── components/             # UI components (VoiceButton, ChatMessage, etc.)
+│   │   ├── pages/                  # ChatPage, LandingPage, Dashboard
+│   │   ├── hooks/                  # useVoiceChat, useChat
+│   │   ├── services/              # voiceApiClient (WebSocket + audio)
+│   │   └── stores/                # Zustand state management
+│   └── package.json
+└── README.md
 ```
 
-## 🎯 Core Components
+## 🎯 Architecture
 
 ### Real-Time Audio Pipeline
-1. **Audio Capture**: Continuous microphone input at 48kHz
-2. **Resampling**: Downsampled to 16kHz for model compatibility
-3. **Voice Activity Detection**: RMS-based silence detection
-4. **Speech Recognition**: Whisper transcription
-6. **LLM Processing**: Contextual response generation
-7. **Text-to-Speech**: Voice synthesis and playback
-
-### WebSocket Communication
-- **Binary audio streaming** for low-latency transmission
-- **JSON metadata** for transcription
-- **Connection management** with automatic reconnection
-- **Error handling** and graceful degradation
-
-## 🔬 Technical Achievements
-
-### 🤖 AI/ML Integration
-- **Transformer Model**: Custom Wav2Vec2 model training on health and wellness datasets
-- **Efficient Inference**: Optimized for real-time performance on CPU/GPU
-- **Model Quantization**: Reduced model size for deployment
-- **Multi-modal Processing**: Speech 
-
-### ⚡ Performance Optimizations
-- **Async Processing**: Non-blocking audio processing pipeline
-- **Model Caching**: Pre-loaded models to eliminate startup delays
-- **Memory Management**: Efficient tensor operations and cleanup
-- **Container Optimization**: Multi-stage Docker builds for smaller images
-
-### 🎨 User Experience
-- **Responsive Design**: Works on desktop and mobile devices
-- **Accessibility**: WCAG compliant components and keyboard navigation
-- **Real-time Feedback**: Visual indicators for voice activity and processing
-- **Intuitive Interface**: Clean, modern design with clear visual hierarchy
-
-## 🧪 Testing & Quality
-
-### Automated Testing
-- **Unit Tests**: Backend logic and API endpoints
-- **Integration Tests**: Full audio pipeline testing
-- **E2E Tests**: Playwright for frontend testing
-- **Performance Tests**: Latency and throughput benchmarks
-
-### Code Quality
-- **TypeScript**: Full type safety in frontend
-- **ESLint**: Code linting and formatting
-- **Pre-commit Hooks**: Automated code quality checks
-- **Docker Testing**: Container build and runtime validation
-
-## 🚀 Deployment
-
-### Production Setup
-```bash
-# Build optimized frontend
-npm run build
-
-# Build production Docker image
-docker build -t fitvoice:latest .
-
-# Run with GPU support (optional)
-docker run --gpus all -p 8080:8080 fitvoice:latest
+```
+Mic → Web Audio API → Int16 PCM → WebSocket → Backend
+  ↓                                              ↓
+  ├─ VAD (barge-in detection)           Google STT / Whisper
+  ↓                                              ↓
+  Stop TTS if user speaks              Transcription
+                                                 ↓
+                                        RAG Retrieval (ChromaDB)
+                                                 ↓
+                                        TinyLlama LLM (w/ context)
+                                                 ↓
+                                        Coqui TTS → base64 WAV
+                                                 ↓
+                                        WebSocket JSON response
+                                                 ↓
+                                    Frontend plays audio + shows RAG debug
 ```
 
-### Environment Variables
+### Key Design Decisions
+- **Silence-based utterance detection**: Audio buffers until 1.5s of silence, then processes entire utterance at once (no mid-speech chunking)
+- **Persistent ChromaDB**: Vector embeddings stored on disk, skips re-embedding on restart (<1s init vs ~30s)
+- **Barge-in via frontend VAD**: RMS threshold on mic input stops TTS playback instantly when user speaks
+- **Lazy Whisper loading**: Whisper model only loaded when toggled to, saving memory
+
+## 🔌 API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/ws` | WebSocket | Audio streaming + responses |
+| `/api/health` | GET | System status + active ASR mode |
+| `/api/asr/status` | GET | Current ASR backend info |
+| `/api/asr/toggle` | POST | Switch between Google/Whisper |
+| `/api/asr/toggle?mode=whisper` | POST | Switch to specific backend |
+| `/api/profile/{user_id}` | GET/POST | User profile management |
+
+## ⚙️ Environment Variables
+
 ```env
-PORT=8080
-WHISPER_MODEL=tiny
-COQUI_TTS_MODEL=tts_models/en/ljspeech/vits
-HF_HOME=/app/models
+GOOGLE_APPLICATION_CREDENTIALS=app/googleasr_key.json
+VITE_BACKEND_URL=http://127.0.0.1:8000   # Frontend .env
 ```
-
-## 📈 Future Roadmap
-
-### Phase 2: Fine Tuning Model
-- [ ] **Training transformer**: Next process is training the transformer model with fitness and health datasets
-
 
 ## 📄 License
 
@@ -224,12 +170,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- **Claude AI** for Whisper speech recognition
-- **Hugging Face** for Transformers library
+- **OpenAI** for Whisper speech recognition
+- **Google Cloud** for Speech-to-Text API
+- **Hugging Face** for Transformers and SentenceTransformers
 - **Coqui TTS** for text-to-speech synthesis
-- **FastAPI** for the excellent web framework
-- **Shadcn/ui** for beautiful UI components
-
-
----
-
+- **ChromaDB** for vector database
+- **FastAPI** for the web framework
+- **Shadcn/ui** for UI components
