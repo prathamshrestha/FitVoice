@@ -12,7 +12,12 @@ Authentication (one of):
 
 # Set environment variable for Google Cloud credentials
 import os
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/app/googleasr_key.json"
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_key_path = os.path.join(_this_dir, "googleasr_key.json")
+if os.path.exists(_key_path):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = _key_path
+else:
+    print(f"⚠️ Google ASR key not found at {_key_path}")
 
 import asyncio
 import numpy as np

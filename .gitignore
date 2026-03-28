@@ -232,3 +232,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ChromaDB persistent vector database
+chroma_db/
+
+# Google Cloud credentials
+**/googleasr_key.json

@@ -107,7 +107,7 @@ numba==0.60.0
 numpy>=1.23.0
 onnx==1.18.0
 onnxruntime==1.22.1
-# openai-whisper  # Replaced by Google Cloud Speech-to-Text
+openai-whisper
 google-cloud-speech
 packaging
 pandas==1.5.3

@@ -28,7 +28,7 @@ except ImportError:
 class FitnessRAGSystem:
     """Retrieval-Augmented Generation for fitness advice"""
     
-    def __init__(self, knowledge_base_path: str = "fitness_knowledge_base.jsonl", collection_name: str = "fitness_kb"):
+    def __init__(self, knowledge_base_path: str = "fitness_knowledge_base.jsonl", collection_name: str = "fitness_kb", persist_dir: str = "./chroma_db"):
         """
         Initialize RAG system with Chroma vector database
         
@@ -46,23 +46,15 @@ class FitnessRAGSystem:
         print("🔄 Loading embedding model...")
         self.embedder = SentenceTransformer("all-MiniLM-L6-v2")  # Fast, lightweight (~22MB)
         
-        # Initialize Chroma client (updated for newer versions)
+        # Initialize Chroma client with persistent storage
         print("🔄 Initializing Chroma database...")
+        self.persist_dir = persist_dir
         try:
-            # Try new API first (Chroma 0.4.x+)
+            self.chroma_client = chromadb.PersistentClient(path=persist_dir)
+            print(f"   📁 Persistent storage: {os.path.abspath(persist_dir)}")
+        except Exception as e:
+            print(f"⚠️ PersistentClient failed ({e}), falling back to in-memory")
             self.chroma_client = chromadb.Client()
-        except TypeError:
-            # Fallback to old API if needed
-            try:
-                from chromadb.config import Settings
-                self.chroma_client = chromadb.Client(Settings(
-                    chroma_db_impl="duckdb",
-                    persist_directory="./chroma_db",
-                    anonymized_telemetry=False,
-                ))
-            except Exception as e:
-                print(f"⚠️ Chroma initialization warning: {e}")
-                self.chroma_client = chromadb.Client()
         
         # Get or create collection
         self.collection = self.chroma_client.get_or_create_collection(
@@ -74,7 +66,8 @@ class FitnessRAGSystem:
     
     def load_knowledge_base(self, force_reload: bool = False) -> int:
         """
-        Load and embed knowledge base into Chroma
+        Load and embed knowledge base into Chroma.
+        Skips re-embedding if data already exists in persistent DB.
         
         Args:
             force_reload: Force reload even if already loaded
@@ -82,13 +75,23 @@ class FitnessRAGSystem:
         Returns:
             Number of documents loaded
         """
-        if self.loaded and not force_reload:
-            count = self.collection.count()
-            print(f"✅ Knowledge base already loaded ({count} documents)")
-            return count
+        # Check if data already exists in persistent storage
+        existing_count = self.collection.count()
+        if existing_count > 0 and not force_reload:
+            print(f"✅ Knowledge base already loaded from disk ({existing_count} documents)")
+            self.loaded = True
+            return existing_count
         
         if not os.path.exists(self.knowledge_base_path):
             raise FileNotFoundError(f"Knowledge base not found: {self.knowledge_base_path}")
+        
+        # Clear existing data if force reloading
+        if force_reload and existing_count > 0:
+            self.chroma_client.delete_collection(self.collection_name)
+            self.collection = self.chroma_client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
         
         # Load documents
         documents = []
@@ -122,7 +125,7 @@ class FitnessRAGSystem:
         )
         
         self.loaded = True
-        print(f"✅ Loaded {len(documents)} documents into Chroma")
+        print(f"✅ Loaded {len(documents)} documents into Chroma (persisted to disk)")
         return len(documents)
     
     def retrieve(self, query: str, top_k: int = 5, min_distance: float = 0.3) -> List[Dict]:
@@ -235,7 +238,7 @@ class HybridFitnessRAG(FitnessRAGSystem):
         self._load_qa_collection()
     
     def _load_qa_collection(self):
-        """Load Q&A examples collection"""
+        """Load Q&A examples collection. Skips if already persisted."""
         if not self.qa_pairs_path or not os.path.exists(self.qa_pairs_path):
             print(f"⚠️ Q&A pairs not found: {self.qa_pairs_path}")
             return
@@ -244,6 +247,12 @@ class HybridFitnessRAG(FitnessRAGSystem):
             name="fitness_qa_pairs",
             metadata={"hnsw:space": "cosine"}
         )
+        
+        # Skip if data already exists in persistent storage
+        existing_count = self.qa_collection.count()
+        if existing_count > 0:
+            print(f"✅ Q&A pairs already loaded from disk ({existing_count} pairs)")
+            return
         
         # Load Q&A pairs
         qa_documents = []
@@ -278,7 +287,7 @@ class HybridFitnessRAG(FitnessRAGSystem):
                     documents=qa_documents[start:end]
                 )
                 print(f"   Added batch {start//BATCH_SIZE + 1} ({end}/{len(qa_documents)})")
-            print(f"✅ Loaded {len(qa_documents)} Q&A pairs")
+            print(f"✅ Loaded {len(qa_documents)} Q&A pairs (persisted to disk)")
     
     def retrieve_hybrid(self, query: str, kb_top_k: int = 3, qa_top_k: int = 2) -> Tuple[str, List[Dict]]:
         """

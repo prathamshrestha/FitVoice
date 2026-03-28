@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import torch
+import whisper
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from transformers import Wav2Vec2ForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
@@ -38,8 +39,40 @@ RMS_THRESHOLD = 0.015
 app = FastAPI()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# --- ASR: Google Cloud Speech-to-Text ---
-asr = GoogleASR(language_code="en-US", sample_rate=SAMPLE_RATE)
+# --- ASR: Dual backend (Google Cloud STT + Whisper) ---
+asr_mode = "google"  # Default: "google" or "whisper"
+
+# Google ASR (initialized eagerly)
+try:
+    google_asr = GoogleASR(language_code="en-US", sample_rate=SAMPLE_RATE)
+except Exception as e:
+    print(f"⚠️ Google ASR failed to init: {e}")
+    google_asr = None
+    asr_mode = "whisper"  # Fallback to whisper if Google fails
+
+# Whisper ASR (lazy loaded — only when first needed)
+whisper_model = None
+
+def get_whisper():
+    """Lazy-load Whisper model only when needed."""
+    global whisper_model
+    if whisper_model is None:
+        print("🔄 Loading Whisper model (tiny)...")
+        whisper_model = whisper.load_model("tiny", device="cpu")
+        print("✅ Whisper model loaded")
+    return whisper_model
+
+
+async def transcribe_audio(audio_buffer: bytes) -> str:
+    """Transcribe audio using the currently active ASR backend."""
+    if asr_mode == "google" and google_asr:
+        return await google_asr.transcribe_async(audio_buffer)
+    else:
+        # Whisper expects float32 numpy array
+        audio_f32 = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+        model = get_whisper()
+        result = await asyncio.to_thread(model.transcribe, audio_f32, fp16=torch.cuda.is_available())
+        return (result.get("text") or "").strip()
 
 emotion_model = Wav2Vec2ForSequenceClassification.from_pretrained(
     "superb/wav2vec2-base-superb-ks"
@@ -87,7 +120,9 @@ sample_rate = 16000
 
 async def google_transcribe(audio_bytes: bytes) -> str:
     """Transcribe audio bytes using Google Cloud Speech-to-Text."""
-    return await asr.transcribe_async(audio_bytes)
+    if google_asr:
+        return await google_asr.transcribe_async(audio_bytes)
+    return ""
 
 def _is_silent(frame_bytes, threshold=0.6):
     audio = np.frombuffer(frame_bytes, dtype=np.int16).astype(np.float32) / 32768.0
@@ -152,9 +187,9 @@ async def process_utterance(buffer: bytes, websocket: WebSocket, stop_flag: asyn
     if float(np.sqrt(np.mean(audio_f32 ** 2))) < RMS_THRESHOLD:
         return
 
-    # ASR — Google Cloud Speech-to-Text (pass raw Int16 PCM bytes)
+    # ASR — use active backend (Google or Whisper)
     try:
-        transcription = await asr.transcribe_async(buffer)
+        transcription = await transcribe_audio(buffer)
         if not transcription or stop_flag.is_set():
             return
     except Exception as e:
@@ -361,11 +396,72 @@ def health_check():
             "rms_threshold": RMS_THRESHOLD,
         },
         "models": {
-            "asr": "Google Cloud STT",
+            "asr": f"{'Google Cloud STT' if asr_mode == 'google' else 'Whisper (tiny)'} [active: {asr_mode}]",
             "emotion": "Wav2Vec2 (superb)",
             "llm": "TinyLlama-1.1B",
             "tts": "VITS" if get_tts() is not None else "VITS (unavailable)"
         }
+    }
+
+
+@app.get("/api/asr/status")
+def asr_status():
+    """Get current ASR backend status."""
+    return {
+        "active_mode": asr_mode,
+        "available_backends": {
+            "google": google_asr is not None,
+            "whisper": True,  # Always available (lazy loaded)
+        },
+        "description": {
+            "google": "Google Cloud Speech-to-Text API (requires credentials)",
+            "whisper": "OpenAI Whisper (tiny, runs locally on CPU)",
+        }
+    }
+
+
+@app.post("/api/asr/toggle")
+def toggle_asr(mode: str = None):
+    """Toggle ASR backend between 'google' and 'whisper'.
+    
+    If mode is provided, switch to that mode.
+    If no mode given, toggle between the two.
+    """
+    global asr_mode
+    
+    if mode:
+        if mode not in ("google", "whisper"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Invalid mode '{mode}'. Use 'google' or 'whisper'."}
+            )
+        if mode == "google" and google_asr is None:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Google ASR not available (credentials missing or init failed)"}
+            )
+        asr_mode = mode
+    else:
+        # Toggle
+        if asr_mode == "google":
+            asr_mode = "whisper"
+        else:
+            if google_asr is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Cannot switch to Google ASR (not available)"}
+                )
+            asr_mode = "google"
+    
+    # Pre-load whisper if switching to it
+    if asr_mode == "whisper":
+        get_whisper()
+    
+    print(f"🔄 ASR switched to: {asr_mode}")
+    return {
+        "success": True,
+        "active_mode": asr_mode,
+        "label": "Google Cloud STT" if asr_mode == "google" else "Whisper (tiny)",
     }
 
 
@@ -377,11 +473,17 @@ def test_audio_chunk(audio_data: bytes):
         is_silent_result = is_silent(audio_data)
         rms_value = rms(audio_data)
         
-        # Test with Google Cloud STT
-        transcription = asr.transcribe(audio_data)
+        # Test with active ASR backend
+        if asr_mode == "google" and google_asr:
+            transcription = google_asr.transcribe(audio_data)
+        else:
+            audio_f32 = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            result = get_whisper().transcribe(audio_f32, fp16=torch.cuda.is_available())
+            transcription = (result.get("text") or "").strip()
         
         return {
             "status": "ok",
+            "asr_mode": asr_mode,
             "bytes_received": len(audio_data),
             "samples": len(audio_data) // 2,
             "rms": float(rms_value),
