@@ -1,4 +1,4 @@
-import { useState, createContext, useContext, useCallback } from 'react';
+import { useState, createContext, useContext, useCallback, useEffect } from 'react';
 
 export interface ChatSession {
   id: string;
@@ -15,6 +15,58 @@ export interface ChatMessage {
   timestamp: Date;
 }
 
+// --- localStorage helpers ---
+const STORAGE_KEY = 'fitvoice_chat_sessions';
+const ACTIVE_SESSION_KEY = 'fitvoice_active_session';
+
+interface StoredSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+function loadSessions(): ChatSession[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: StoredSession[] = JSON.parse(raw);
+    return parsed.map(s => ({
+      ...s,
+      createdAt: new Date(s.createdAt),
+      updatedAt: new Date(s.updatedAt),
+      messages: s.messages.map(m => ({
+        ...m,
+        timestamp: new Date(m.timestamp),
+      })),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function saveSessions(sessions: ChatSession[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+  } catch {
+    console.warn('Failed to save chat sessions to localStorage');
+  }
+}
+
+function loadActiveSessionId(): string | null {
+  return localStorage.getItem(ACTIVE_SESSION_KEY);
+}
+
+function saveActiveSessionId(id: string | null): void {
+  if (id) {
+    localStorage.setItem(ACTIVE_SESSION_KEY, id);
+  } else {
+    localStorage.removeItem(ACTIVE_SESSION_KEY);
+  }
+}
+
+// --- Context ---
 interface ChatStoreContextType {
   sessions: ChatSession[];
   activeSessionId: string | null;
@@ -28,39 +80,19 @@ interface ChatStoreContextType {
 const ChatStoreContext = createContext<ChatStoreContextType | null>(null);
 
 export function ChatStoreProvider({ children }: { children: React.ReactNode }) {
-  const [sessions, setSessions] = useState<ChatSession[]>([
-    {
-      id: 'demo-1',
-      title: 'Breakfast nutrition check',
-      messages: [
-        { id: '1', role: 'user', content: 'I had two boiled eggs and a bowl of oatmeal for breakfast', timestamp: new Date(Date.now() - 3600000) },
-        { id: '2', role: 'assistant', content: 'Great breakfast! **2 Boiled Eggs**: ~140 kcal, 12g protein. **Oatmeal**: ~150 kcal, 5g protein, 4g fiber. **Total: ~290 kcal, 17g protein.** 💪', timestamp: new Date(Date.now() - 3500000) },
-      ],
-      createdAt: new Date(Date.now() - 3600000),
-      updatedAt: new Date(Date.now() - 3500000),
-    },
-    {
-      id: 'demo-2',
-      title: 'Workout routine advice',
-      messages: [
-        { id: '3', role: 'user', content: 'Recommend a full body workout for beginners', timestamp: new Date(Date.now() - 86400000) },
-        { id: '4', role: 'assistant', content: 'Here\'s a beginner full body workout:\n\n1. **Squats** — 3×12\n2. **Push-ups** — 3×10\n3. **Lunges** — 3×10 each leg\n4. **Plank** — 3×30s\n\nRest 60s between sets. Do this 3x/week! 🔥', timestamp: new Date(Date.now() - 86300000) },
-      ],
-      createdAt: new Date(Date.now() - 86400000),
-      updatedAt: new Date(Date.now() - 86300000),
-    },
-    {
-      id: 'demo-3',
-      title: 'High fiber meal ideas',
-      messages: [
-        { id: '5', role: 'user', content: 'How much fiber is in oatmeal and how can I get more?', timestamp: new Date(Date.now() - 172800000) },
-        { id: '6', role: 'assistant', content: 'One cup of cooked oatmeal has ~**4g fiber** (14% daily). Boost it with:\n- Chia seeds (+5g/tbsp)\n- Blueberries (+1.8g)\n- Flaxseeds (+2g/tbsp)', timestamp: new Date(Date.now() - 172700000) },
-      ],
-      createdAt: new Date(Date.now() - 172800000),
-      updatedAt: new Date(Date.now() - 172700000),
-    },
-  ]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<ChatSession[]>(() => loadSessions());
+  const [activeSessionId, setActiveSessionIdState] = useState<string | null>(() => loadActiveSessionId());
+
+  // Persist sessions to localStorage whenever they change
+  useEffect(() => {
+    saveSessions(sessions);
+  }, [sessions]);
+
+  // Persist active session ID
+  const setActiveSessionId = useCallback((id: string | null) => {
+    setActiveSessionIdState(id);
+    saveActiveSessionId(id);
+  }, []);
 
   const createSession = useCallback(() => {
     const id = Date.now().toString();
@@ -74,9 +106,10 @@ export function ChatStoreProvider({ children }: { children: React.ReactNode }) {
     setSessions(prev => [session, ...prev]);
     setActiveSessionId(id);
     return id;
-  }, []);
+  }, [setActiveSessionId]);
 
   const addMessage = useCallback((sessionId: string, msg: Omit<ChatMessage, 'id' | 'timestamp'>) => {
+    if (!msg.content) return; // Guard against undefined content
     setSessions(prev => prev.map(s => {
       if (s.id !== sessionId) return s;
       const newMsg: ChatMessage = { ...msg, id: Date.now().toString(), timestamp: new Date() };
@@ -91,7 +124,11 @@ export function ChatStoreProvider({ children }: { children: React.ReactNode }) {
 
   const deleteSession = useCallback((id: string) => {
     setSessions(prev => prev.filter(s => s.id !== id));
-    setActiveSessionId(prev => prev === id ? null : prev);
+    setActiveSessionIdState(prev => {
+      const newId = prev === id ? null : prev;
+      saveActiveSessionId(newId);
+      return newId;
+    });
   }, []);
 
   return (

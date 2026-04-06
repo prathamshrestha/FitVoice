@@ -21,7 +21,7 @@ export default function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [dismissedError, setDismissedError] = useState(false);
 
-  // Initialize session from URL or create new
+  // Initialize session from URL or create new — only on mount / URL change
   useEffect(() => {
     const urlSession = searchParams.get('session');
     if (urlSession && sessions.find(s => s.id === urlSession)) {
@@ -29,7 +29,8 @@ export default function ChatPage() {
     } else if (!activeSessionId) {
       createSession();
     }
-  }, [searchParams, sessions, activeSessionId, createSession, setActiveSessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const currentSession = sessions.find(s => s.id === activeSessionId);
 
@@ -79,12 +80,13 @@ export default function ChatPage() {
   // Memoize options to prevent hook re-runs
   const voiceChatOptions = useMemo(
     () => ({
+      sessionId: activeSessionId ?? undefined,
       onTranscription: handleTranscription,
       onResponse: handleResponse,
       onError: handleError,
       onRagDebug: handleRagDebug,
     }),
-    [handleTranscription, handleResponse, handleError, handleRagDebug]
+    [activeSessionId, handleTranscription, handleResponse, handleError, handleRagDebug]
   );
 
   const {
@@ -120,12 +122,18 @@ export default function ChatPage() {
     }
   };
 
-  const formatDate = (date: Date) => {
-    const diff = Date.now() - date.getTime();
-    const hours = Math.floor(diff / 3600000);
-    if (hours < 1) return 'Just now';
-    if (hours < 24) return `${hours}h ago`;
-    return `${Math.floor(hours / 24)}d ago`;
+  const formatDate = (date: Date | string) => {
+    try {
+      const d = date instanceof Date ? date : new Date(date);
+      if (isNaN(d.getTime())) return '';
+      const diff = Date.now() - d.getTime();
+      const hours = Math.floor(diff / 3600000);
+      if (hours < 1) return 'Just now';
+      if (hours < 24) return `${hours}h ago`;
+      return `${Math.floor(hours / 24)}d ago`;
+    } catch {
+      return '';
+    }
   };
 
   return (

@@ -21,11 +21,13 @@ try:
     from .user_profile import UserProfileManager, FitnessGoal, get_goal_specific_system_prompt
     from .fitness_llm_inference import FitnessLLMInference
     from .google_asr import GoogleASR
+    from .conversation_memory import ConversationMemory
 except ImportError:
     # Fallback to absolute imports (when running from app directory)
     from user_profile import UserProfileManager, FitnessGoal, get_goal_specific_system_prompt
     from fitness_llm_inference import FitnessLLMInference
     from google_asr import GoogleASR
+    from conversation_memory import ConversationMemory
 
 
 SAMPLE_RATE = 16000
@@ -84,6 +86,7 @@ llm_model = AutoModelForCausalLM.from_pretrained(
 
 # --- Fitness-specific components ---
 profile_manager = UserProfileManager()
+conversation_memory = ConversationMemory(max_turns=5)
 
 # Initialize fitness LLM (with optional LoRA weights if available)
 try:
@@ -125,7 +128,7 @@ def _is_silent(frame_bytes, threshold=0.6):
     rms = (np.mean(audio**2) ** 0.5)
     return rms < threshold
 
-def generate_response(prompt: str, stop_flag: asyncio.Event, user_id: Optional[str] = None) -> tuple:
+def generate_response(prompt: str, stop_flag: asyncio.Event, user_id: Optional[str] = None, session_id: Optional[str] = None) -> tuple:
     """Generate fitness-specific response using fine-tuned model.
     Returns (response_text, rag_debug_dict)"""
     if stop_flag.is_set():
@@ -137,12 +140,21 @@ def generate_response(prompt: str, stop_flag: asyncio.Event, user_id: Optional[s
         if user_id:
             user_profile = profile_manager.get_profile(user_id)
         
+        # Get conversation history for this session
+        conv_history = ""
+        if session_id:
+            conv_history = conversation_memory.format_for_prompt(session_id)
+            turn_count = conversation_memory.get_turn_count(session_id)
+            if turn_count > 0:
+                print(f"Context: {turn_count} previous turns for session {session_id[:8]}")
+        
         # Generate using fitness LLM (now returns dict)
         result = fitness_llm.generate_fitness_advice(
             query=prompt,
             user_profile=user_profile,
             max_new_tokens=150,
             temperature=0.6,
+            conversation_history=conv_history,
         )
         
         response = result["response"]
@@ -152,7 +164,6 @@ def generate_response(prompt: str, stop_flag: asyncio.Event, user_id: Optional[s
             return "", {}
         
         # Clean up response: keep all complete sentences
-        # Find the last sentence-ending punctuation and trim after it
         last_period = -1
         for i, ch in enumerate(response):
             if ch in '.!?':
@@ -182,7 +193,7 @@ async def synthesize_tts(text, stop_flag: asyncio.Event):
         print("TTS Error:", e)
         return None
 
-async def process_utterance(buffer: bytes, websocket: WebSocket, stop_flag: asyncio.Event, user_id: Optional[str] = None):
+async def process_utterance(buffer: bytes, websocket: WebSocket, stop_flag: asyncio.Event, user_id: Optional[str] = None, session_id: Optional[str] = None):
     if stop_flag.is_set() or not buffer:
         return
 
@@ -200,10 +211,14 @@ async def process_utterance(buffer: bytes, websocket: WebSocket, stop_flag: asyn
         print("ASR error:", e)
         return
 
-    # LLM - using fitness-aware generation (now returns rag_debug too)
-    response, rag_debug = generate_response(transcription, stop_flag, user_id=user_id)
+    # LLM - using fitness-aware generation with session context
+    response, rag_debug = generate_response(transcription, stop_flag, user_id=user_id, session_id=session_id)
     if stop_flag.is_set() or not response:
         return
+
+    # Save this turn to conversation memory
+    if session_id:
+        conversation_memory.add_turn(session_id, transcription, response)
 
     # TTS
     audio_base64 = await synthesize_tts(response, stop_flag)
@@ -215,6 +230,7 @@ async def process_utterance(buffer: bytes, websocket: WebSocket, stop_flag: asyn
         "llm_response": response,
         "audio": audio_base64,
         "rag_debug": rag_debug,
+        "session_id": session_id,
     })
 
 def rms(frame_i16: bytes) -> float:
@@ -268,6 +284,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     stop_flag = asyncio.Event()
     user_id: Optional[str] = None  # Track user_id for personalized responses
+    session_id: Optional[str] = None  # Track session for conversation memory
 
     try:
         while not stop_flag.is_set():
@@ -292,9 +309,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Handle user_id setting (format: "user_id:actual_user_id")
                 elif payload.startswith("user_id:"):
                     user_id = payload.split(":", 1)[1]
-                    print(f"👤 User connected: {user_id}")
+                    print(f"User connected: {user_id}")
                     try: 
                         await websocket.send_json({"info": f"user_id_set", "user_id": user_id})
+                    except: pass
+                # Handle session_id setting (format: "session_id:actual_session_id")
+                elif payload.startswith("session_id:"):
+                    session_id = payload.split(":", 1)[1]
+                    turn_count = conversation_memory.get_turn_count(session_id)
+                    print(f"Session set: {session_id[:12]}... ({turn_count} previous turns)")
+                    try:
+                        await websocket.send_json({"info": "session_id_set", "session_id": session_id, "turn_count": turn_count})
                     except: pass
                 # idle close if absolutely nothing happening for a long time
                 if (now - last_voice_time) > IDLE_CLOSE_SEC:
@@ -347,7 +372,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     print(f"Processing utterance ({len(chunk)} bytes, {len(chunk)//2} samples)")
                     try:
                         async with processing_lock:
-                            await process_utterance(chunk, websocket, stop_flag, user_id=user_id)
+                            await process_utterance(chunk, websocket, stop_flag, user_id=user_id, session_id=session_id)
                     except Exception as e:
                         print("process_utterance error:", e)
             

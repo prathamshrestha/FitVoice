@@ -122,8 +122,14 @@ class FitnessLLMInference:
         temperature: float = 0.7,
         top_p: float = 0.9,
         use_rag: bool = True,
+        conversation_history: str = "",
     ) -> Dict:
         """Generate fitness advice for a user query with optional profile context and RAG.
+        
+        Args:
+            query: The user's current question
+            user_profile: Optional user profile for personalized prompts
+            conversation_history: Formatted string of previous turns for context
         
         Returns:
             dict with keys: 'response' (str), 'rag_debug' (dict with confidence info)
@@ -139,6 +145,15 @@ class FitnessLLMInference:
                 "If reference information is provided below, use it to give an accurate answer. "
                 "Speak naturally as if talking to someone — no bullet points or lists. "
                 "Be specific with numbers (calories, reps, sets, grams) when relevant."
+            )
+        
+        # Add conversation context instruction if history exists
+        if conversation_history:
+            system_prompt += (
+                "\n\nYou are in an ongoing conversation. Use the previous exchanges "
+                "to understand context. If the user refers to something from earlier "
+                "(like 'what about that', 'how much more', 'and for lunch?'), "
+                "answer based on the conversation history."
             )
         
         # Retrieve knowledge context if RAG enabled
@@ -167,15 +182,29 @@ class FitnessLLMInference:
                     for doc in retrieved_docs
                 ]
                 top_rel = retrieved_docs[0].get("relevance", 0) if retrieved_docs else 0
-                print(f"📚 RAG: {len(retrieved_docs)} docs for '{query[:50]}' (top: {top_rel:.0%})")
+                print(f"RAG: {len(retrieved_docs)} docs for '{query[:50]}' (top: {top_rel:.0%})")
             else:
-                print(f"⚠️ RAG: no relevant docs for '{query[:50]}'")
+                print(f"RAG: no relevant docs for '{query[:50]}'")
         
         # Build the full prompt using TinyLlama chat template
         SYS_TAG = "<" + "|system|" + ">"
         USR_TAG = "<" + "|user|" + ">"
         AST_TAG = "<" + "|assistant|" + ">"
-        prompt = f"{SYS_TAG}\n{system_prompt}\n{USR_TAG}\n{query}\n{AST_TAG}\n"
+        
+        # Build multi-turn prompt if conversation history exists
+        if conversation_history:
+            # Inject history as previous turns in the chat template
+            prompt = f"{SYS_TAG}\n{system_prompt}\n"
+            # Parse and add previous turns
+            for line in conversation_history.split("\n"):
+                if line.startswith("User: "):
+                    prompt += f"{USR_TAG}\n{line[6:]}\n"
+                elif line.startswith("Assistant: "):
+                    prompt += f"{AST_TAG}\n{line[11:]}\n"
+            # Add current query
+            prompt += f"{USR_TAG}\n{query}\n{AST_TAG}\n"
+        else:
+            prompt = f"{SYS_TAG}\n{system_prompt}\n{USR_TAG}\n{query}\n{AST_TAG}\n"
         
         # Generate response
         input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)

@@ -20,6 +20,7 @@ export interface VoiceApiClient {
   connect: () => Promise<void>;
   disconnect: () => void;
   sendAudio: (audioChunk: Uint8Array) => void;
+  sendSessionId: (sessionId: string) => void;
   isConnected: () => boolean;
   onMessage: (callback: (data: VoiceResponse) => void) => void;
   onError: (callback: (error: string) => void) => void;
@@ -112,6 +113,13 @@ class VoiceApiClientImpl implements VoiceApiClient {
     }
   }
 
+  sendSessionId(sessionId: string): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(`session_id:${sessionId}`);
+      console.log(`📋 Session ID sent: ${sessionId.slice(0, 12)}...`);
+    }
+  }
+
   private cleanup(): void {
     if (this.processor) {
       this.processor.disconnect();
@@ -134,11 +142,12 @@ class VoiceApiClientImpl implements VoiceApiClient {
   }
 
   onMessage(callback: (data: VoiceResponse) => void): void {
-    this.messageCallbacks.push(callback);
+    // Replace all callbacks with this one (prevents stacking from React re-mounts)
+    this.messageCallbacks = [callback];
   }
 
   onError(callback: (error: string) => void): void {
-    this.errorCallbacks.push(callback);
+    this.errorCallbacks = [callback];
   }
 
   ping(): void {

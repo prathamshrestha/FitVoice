@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { voiceApi, playAudioResponse, type VoiceResponse } from '@/services/voiceApiClient';
 
 export interface UseVoiceChatOptions {
+  sessionId?: string;
   onTranscription?: (text: string) => void;
   onResponse?: (text: string) => void;
   onError?: (error: string) => void;
@@ -14,15 +15,27 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Setup message and error handlers
+  // Use refs for callbacks to avoid re-running the effect when they change
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
+  // Setup message and error handlers — runs ONCE on mount
   useEffect(() => {
     // Set up message handler
     voiceApi.onMessage(async (data: VoiceResponse) => {
+      // Skip info/control messages (like session_id_set, user_id_set)
+      if (!data.text && !data.llm_response) {
+        console.log('📍 Info message received:', data);
+        return;
+      }
+
       setIsProcessing(true);
       try {
+        const opts = optionsRef.current;
+
         // Notify transcription
-        if (options.onTranscription) {
-          options.onTranscription(data.text);
+        if (opts.onTranscription && data.text) {
+          opts.onTranscription(data.text);
         }
 
         // Log RAG debug info to console
@@ -33,14 +46,14 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
             `${rd.num_docs} docs | ${rd.context_length} chars`,
             rd.sources
           );
-          if (options.onRagDebug) {
-            options.onRagDebug(data.rag_debug);
+          if (opts.onRagDebug) {
+            opts.onRagDebug(data.rag_debug);
           }
         }
 
         // Notify LLM response
-        if (options.onResponse) {
-          options.onResponse(data.llm_response);
+        if (opts.onResponse) {
+          opts.onResponse(data.llm_response);
         }
 
         // Play audio response (mic stays active — barge-in enabled)
@@ -53,8 +66,9 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         setError(errorMsg);
-        if (options.onError) {
-          options.onError(errorMsg);
+        const opts = optionsRef.current;
+        if (opts.onError) {
+          opts.onError(errorMsg);
         }
       } finally {
         setIsProcessing(false);
@@ -64,26 +78,18 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
     // Set up error handler
     voiceApi.onError((err) => {
       setError(err);
-      if (options.onError) {
-        options.onError(err);
+      const opts = optionsRef.current;
+      if (opts.onError) {
+        opts.onError(err);
       }
     });
 
-    // Only disconnect on component unmount, not on re-runs
-    return () => {
-      // Don't disconnect the WebSocket here - let it persist
-      // Only stop audio capture
-      voiceApi.stopAudioCapture();
-    };
-  }, [options]);
-
-  // Cleanup on unmount
-  useEffect(() => {
+    // Cleanup on unmount only
     return () => {
       voiceApi.stopAudioCapture();
       voiceApi.disconnect();
     };
-  }, []);
+  }, []); // Empty deps — runs once
 
   const startListening = useCallback(async () => {
     try {
@@ -100,6 +106,12 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
         console.log('✅ Already connected to voice API');
       }
 
+      // Send session ID for conversation memory
+      const sid = optionsRef.current.sessionId;
+      if (sid) {
+        voiceApi.sendSessionId(sid);
+      }
+
       // Start capturing and sending audio
       console.log('🎙️ Starting audio capture...');
       await voiceApi.startAudioCapture((audioChunk) => {
@@ -112,11 +124,12 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error('❌ Voice error:', errorMsg);
       setError(errorMsg);
-      if (options.onError) {
-        options.onError(errorMsg);
+      const opts = optionsRef.current;
+      if (opts.onError) {
+        opts.onError(errorMsg);
       }
     }
-  }, [isConnected, options]);
+  }, [isConnected]);
 
   const stopListening = useCallback(() => {
     voiceApi.stopAudioCapture();
