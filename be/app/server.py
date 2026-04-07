@@ -6,10 +6,12 @@ import soundfile as sf
 import torch
 import whisper
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from TTS.api import TTS
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 # Add app directory to path to support both relative and direct imports
 _app_dir = Path(__file__).parent
@@ -38,7 +40,42 @@ MAX_BUFFER_SEC = 15.0
 RMS_THRESHOLD = 0.015  
 
 app = FastAPI()
+
+
+# Configure CORS for frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins in development. Restrict in production.
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# --- Pydantic Models for Request/Response ---
+class UserProfileCreate(BaseModel):
+    user_id: str
+    name: str
+    primary_goal: str = "general_wellness"
+    age: Optional[int] = None
+    fitness_level: Optional[str] = None
+    weight_kg: Optional[float] = None
+    height_cm: Optional[float] = None
+    medical_conditions: Optional[str] = None
+    dietary_restrictions: Optional[List[str]] = None
+
+
+class UserProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    primary_goal: Optional[str] = None
+    age: Optional[int] = None
+    fitness_level: Optional[str] = None
+    weight_kg: Optional[float] = None
+    height_cm: Optional[float] = None
+    medical_conditions: Optional[str] = None
+    dietary_restrictions: Optional[List[str]] = None
+
 
 # --- ASR: Dual backend (Google Cloud STT + Whisper) ---
 asr_mode = "google"  # Default: "google" or "whisper"
@@ -139,6 +176,13 @@ def generate_response(prompt: str, stop_flag: asyncio.Event, user_id: Optional[s
         user_profile = None
         if user_id:
             user_profile = profile_manager.get_profile(user_id)
+            if user_profile:
+                print(f"✅ Profile loaded for {user_id}: {user_profile.name} ({user_profile.primary_goal.value})")
+                print(f"   Goals: {[g.value for g in user_profile.secondary_goals]}, Dietary: {user_profile.dietary_restrictions}")
+            else:
+                print(f"⚠️ No profile found for user_id: {user_id}")
+        else:
+            print(f"⚠️ No user_id provided - using generic responses")
         
         # Get conversation history for this session
         conv_history = ""
@@ -309,7 +353,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Handle user_id setting (format: "user_id:actual_user_id")
                 elif payload.startswith("user_id:"):
                     user_id = payload.split(":", 1)[1]
-                    print(f"User connected: {user_id}")
+                    profile = profile_manager.get_profile(user_id)
+                    if profile:
+                        print(f"👤 User connected: {user_id}")
+                        print(f"   Name: {profile.name}, Goal: {profile.primary_goal.value}, Dietary: {profile.dietary_restrictions}")
+                    else:
+                        print(f"❌ User connected with unknown ID: {user_id}")
                     try: 
                         await websocket.send_json({"info": f"user_id_set", "user_id": user_id})
                     except: pass
@@ -317,7 +366,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif payload.startswith("session_id:"):
                     session_id = payload.split(":", 1)[1]
                     turn_count = conversation_memory.get_turn_count(session_id)
-                    print(f"Session set: {session_id[:12]}... ({turn_count} previous turns)")
+                    print(f"📋 Session set: {session_id[:12]}... ({turn_count} previous turns)")
                     try:
                         await websocket.send_json({"info": "session_id_set", "session_id": session_id, "turn_count": turn_count})
                     except: pass
@@ -522,37 +571,29 @@ def test_audio_chunk(audio_data: bytes):
 
 
 @app.post("/api/users")
-def create_user(
-    user_id: str,
-    name: str,
-    primary_goal: str = "general_wellness",
-    age: int = None,
-    fitness_level: str = None,
-    weight_kg: float = None,
-    height_cm: float = None,
-    medical_conditions: str = None,
-):
+def create_user(profile_data: UserProfileCreate):
     """Create a new user profile."""
     try:
         # Validate fitness goal
-        if primary_goal not in [g.value for g in FitnessGoal]:
+        if profile_data.primary_goal not in [g.value for g in FitnessGoal]:
             return JSONResponse(
                 status_code=400,
                 content={"error": f"Invalid fitness goal. Choose from: {[g.value for g in FitnessGoal]}"}
             )
         
         profile = profile_manager.create_profile(
-            user_id=user_id,
-            name=name,
-            primary_goal=FitnessGoal(primary_goal),
-            age=age,
-            fitness_level=fitness_level,
-            weight_kg=weight_kg,
-            height_cm=height_cm,
-            medical_conditions=medical_conditions,
+            user_id=profile_data.user_id,
+            name=profile_data.name,
+            primary_goal=FitnessGoal(profile_data.primary_goal),
+            age=profile_data.age,
+            fitness_level=profile_data.fitness_level,
+            weight_kg=profile_data.weight_kg,
+            height_cm=profile_data.height_cm,
+            medical_conditions=profile_data.medical_conditions,
+            dietary_restrictions=profile_data.dietary_restrictions or [],
         )
         
-        return {"success": True, "user_id": user_id, "profile": profile.to_dict()}
+        return {"success": True, "user_id": profile_data.user_id, "profile": profile.to_dict()}
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -573,29 +614,28 @@ def get_user(user_id: str):
 
 
 @app.put("/api/users/{user_id}")
-def update_user(
-    user_id: str,
-    name: str = None,
-    primary_goal: str = None,
-    age: int = None,
-    fitness_level: str = None,
-    weight_kg: float = None,
-    height_cm: float = None,
-    medical_conditions: str = None,
-):
+def update_user(user_id: str, profile_data: UserProfileUpdate):
     """Update user profile."""
     try:
         update_data = {}
-        if name: update_data["name"] = name
-        if primary_goal:
-            if primary_goal not in [g.value for g in FitnessGoal]:
+        if profile_data.name: 
+            update_data["name"] = profile_data.name
+        if profile_data.primary_goal:
+            if profile_data.primary_goal not in [g.value for g in FitnessGoal]:
                 return JSONResponse(status_code=400, content={"error": "Invalid fitness goal"})
-            update_data["primary_goal"] = FitnessGoal(primary_goal)
-        if age: update_data["age"] = age
-        if fitness_level: update_data["fitness_level"] = fitness_level
-        if weight_kg: update_data["weight_kg"] = weight_kg
-        if height_cm: update_data["height_cm"] = height_cm
-        if medical_conditions: update_data["medical_conditions"] = medical_conditions
+            update_data["primary_goal"] = FitnessGoal(profile_data.primary_goal)
+        if profile_data.age: 
+            update_data["age"] = profile_data.age
+        if profile_data.fitness_level: 
+            update_data["fitness_level"] = profile_data.fitness_level
+        if profile_data.weight_kg: 
+            update_data["weight_kg"] = profile_data.weight_kg
+        if profile_data.height_cm: 
+            update_data["height_cm"] = profile_data.height_cm
+        if profile_data.medical_conditions: 
+            update_data["medical_conditions"] = profile_data.medical_conditions
+        if profile_data.dietary_restrictions is not None: 
+            update_data["dietary_restrictions"] = profile_data.dietary_restrictions
         
         profile = profile_manager.update_profile(user_id, **update_data)
         if not profile:

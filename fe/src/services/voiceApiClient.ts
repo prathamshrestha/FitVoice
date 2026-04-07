@@ -21,6 +21,7 @@ export interface VoiceApiClient {
   disconnect: () => void;
   sendAudio: (audioChunk: Uint8Array) => void;
   sendSessionId: (sessionId: string) => void;
+  sendUserId: (userId: string) => void;
   isConnected: () => boolean;
   onMessage: (callback: (data: VoiceResponse) => void) => void;
   onError: (callback: (error: string) => void) => void;
@@ -117,6 +118,13 @@ class VoiceApiClientImpl implements VoiceApiClient {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(`session_id:${sessionId}`);
       console.log(`📋 Session ID sent: ${sessionId.slice(0, 12)}...`);
+    }
+  }
+
+  sendUserId(userId: string): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(`user_id:${userId}`);
+      console.log(`👤 User ID sent: ${userId.slice(0, 12)}...`);
     }
   }
 

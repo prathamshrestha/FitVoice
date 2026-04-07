@@ -106,6 +106,12 @@ export const useVoiceChat = (options: UseVoiceChatOptions = {}) => {
         console.log('✅ Already connected to voice API');
       }
 
+      // Send user ID for personalized responses
+      const userId = localStorage.getItem('user_id');
+      if (userId) {
+        voiceApi.sendUserId(userId);
+      }
+
       // Send session ID for conversation memory
       const sid = optionsRef.current.sessionId;
       if (sid) {

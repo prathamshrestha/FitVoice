@@ -10,6 +10,7 @@ from typing import Optional, Tuple, List, Dict
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
+
 # Add app and parent directory to path to support both relative and direct imports
 _app_dir = Path(__file__).parent
 _parent_dir = _app_dir.parent
@@ -138,6 +139,9 @@ class FitnessLLMInference:
         # Create context-aware system prompt
         if user_profile:
             system_prompt = get_goal_specific_system_prompt(user_profile)
+            print(f"📊 Personalized prompt generated for {user_profile.name} ({user_profile.primary_goal.value})")
+            if user_profile.dietary_restrictions:
+                print(f"   🥗 Dietary restrictions: {', '.join(user_profile.dietary_restrictions)}")
         else:
             system_prompt = (
                 "You are FitVoice, a helpful fitness and nutrition coach. "
@@ -146,6 +150,7 @@ class FitnessLLMInference:
                 "Speak naturally as if talking to someone — no bullet points or lists. "
                 "Be specific with numbers (calories, reps, sets, grams) when relevant."
             )
+            print(f"📝 Using generic system prompt (no user profile)")
         
         # Add conversation context instruction if history exists
         if conversation_history:
@@ -229,7 +234,42 @@ class FitnessLLMInference:
         response = response.split(USR_TAG)[0].strip()
         response = response.split(SYS_TAG)[0].strip()
         
+        # Validate response against dietary restrictions
+        if user_profile and user_profile.dietary_restrictions:
+            self._validate_dietary_recommendations(response, user_profile)
+        
         return {"response": response, "rag_debug": rag_debug}
+    
+    def _validate_dietary_recommendations(self, response: str, user_profile) -> None:
+        """Check if response respects user's dietary restrictions and log any violations."""
+        response_lower = response.lower()
+        restrictions_lower = [r.lower() for r in user_profile.dietary_restrictions]
+        
+        # Define prohibited foods for each restriction
+        prohibition_map = {
+            'vegan': ['meat', 'beef', 'chicken', 'fish', 'egg', 'dairy', 'milk', 'cheese', 'yogurt', 'butter'],
+            'vegetarian': ['meat', 'beef', 'chicken', 'fish'],
+            'gluten': ['gluten', 'wheat', 'barley', 'rye', 'bread', 'pasta', 'pizza'],
+            'dairy': ['milk', 'cheese', 'yogurt', 'butter', 'cream', 'dairy'],
+            'nut': ['nut', 'peanut', 'almond', 'walnut', 'cashew'],
+            'keto': ['bread', 'pasta', 'rice', 'sugar', 'fruit', 'carb'],
+        }
+        
+        violations = []
+        for restriction in restrictions_lower:
+            # Find matching prohibition list
+            for key, prohibited_foods in prohibition_map.items():
+                if key in restriction:
+                    for food in prohibited_foods:
+                        if food in response_lower:
+                            violations.append(f"{restriction}: mentions '{food}'")
+                    break
+        
+        if violations:
+            print(f"⚠️ Dietary violation detected: {', '.join(violations)}")
+            print(f"   Consider regenerating with stricter prompt")
+        else:
+            print(f"✅ Response respects dietary restrictions: {', '.join(restrictions_lower)}")
     
     def generate_personalized_advice(
         self,

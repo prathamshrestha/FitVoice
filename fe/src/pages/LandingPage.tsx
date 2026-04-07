@@ -1,6 +1,8 @@
-import { Link } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { Mic, Brain, Zap, Apple, Dumbbell, ArrowRight, Activity } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ProfileSetupModal } from '@/components/ProfileSetupModal';
 import heroImage from '@/assets/hero-fitness.jpg';
 
 const features = [
@@ -37,8 +39,43 @@ const features = [
 ];
 
 export default function LandingPage() {
+  const navigate = useNavigate();
+  const [userId, setUserId] = useState<string | null>(null);
+  const [showProfileSetup, setShowProfileSetup] = useState(false);
+
+  useEffect(() => {
+    const savedUserId = localStorage.getItem('user_id');
+    setUserId(savedUserId);
+  }, []);
+
+  const handleStartChat = () => {
+    if (userId) {
+      navigate('/chat');
+    } else {
+      // Generate a new user ID
+      const newUserId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      setUserId(newUserId);
+      localStorage.setItem('user_id', newUserId);
+      setShowProfileSetup(true);
+    }
+  };
+
+  const handleProfileComplete = () => {
+    setShowProfileSetup(false);
+    navigate('/chat');
+  };
+
   return (
     <div className="min-h-screen bg-background pt-16">
+      {/* Profile Setup Modal */}
+      {userId && (
+        <ProfileSetupModal
+          isOpen={showProfileSetup}
+          onComplete={handleProfileComplete}
+          userId={userId}
+        />
+      )}
+
       {/* Hero */}
       <section className="relative overflow-hidden">
         <div className="absolute inset-0">
@@ -63,11 +100,12 @@ export default function LandingPage() {
               Get instant nutrition analysis, workout recommendations, and wellness tips — completely hands-free.
             </p>
             <div className="flex flex-wrap gap-4">
-              <Link to="/chat">
-                <Button className="bg-primary text-primary-foreground hover:bg-primary/80 neon-glow h-12 px-8 text-base font-semibold gap-2">
-                  Start Talking <ArrowRight className="w-4 h-4" />
-                </Button>
-              </Link>
+              <Button
+                onClick={handleStartChat}
+                className="bg-primary text-primary-foreground hover:bg-primary/80 neon-glow h-12 px-8 text-base font-semibold gap-2"
+              >
+                Start Talking <ArrowRight className="w-4 h-4" />
+              </Button>
               <Link to="/dashboard">
                 <Button variant="outline" className="border-border text-foreground hover:bg-secondary h-12 px-8 text-base">
                   View Dashboard
