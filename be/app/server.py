@@ -77,6 +77,12 @@ class UserProfileUpdate(BaseModel):
     dietary_restrictions: Optional[List[str]] = None
 
 
+class ChatRequest(BaseModel):
+    message: str
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
 # --- ASR: Dual backend (Google Cloud STT + Whisper) ---
 asr_mode = "google"  # Default: "google" or "whisper"
 
@@ -453,7 +459,33 @@ async def websocket_endpoint(websocket: WebSocket):
         print("🧹 Cleanup.")
 
 
-# --- REST API Endpoints for User Profile Management ---
+# --- REST API Endpoints ---
+
+@app.post("/api/chat")
+async def text_chat(req: ChatRequest):
+    """Text-based chat endpoint. Same LLM + RAG pipeline as voice."""
+    if not req.message.strip():
+        return JSONResponse(status_code=400, content={"error": "Message cannot be empty"})
+    
+    try:
+        stop_flag = asyncio.Event()
+        response_text, rag_debug = await asyncio.to_thread(
+            generate_response, req.message.strip(), stop_flag,
+            user_id=req.user_id, session_id=req.session_id
+        )
+        
+        # Save turn to conversation memory
+        if req.session_id and response_text:
+            conversation_memory.add_turn(req.session_id, req.message.strip(), response_text)
+        
+        return {
+            "response": response_text,
+            "rag_debug": rag_debug,
+        }
+    except Exception as e:
+        print(f"Text chat error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 @app.get("/api/health")
 def health_check():
