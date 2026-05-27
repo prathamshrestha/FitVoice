@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Send, Search, Plus, MessageSquare, PanelLeftClose, PanelLeft, Clock, AlertCircle, X } from 'lucide-react';
+import { Send, Search, Plus, MessageSquare, PanelLeftClose, PanelLeft, Clock, AlertCircle, X, Loader } from 'lucide-react';
 import { ChatMessage } from '@/components/ChatMessage';
 import { VoiceButton } from '@/components/VoiceButton';
 import { WaveformVisualizer } from '@/components/WaveformVisualizer';
@@ -112,13 +112,51 @@ export default function ChatPage() {
     }
   }, [isListening, startListening, disconnect]);
 
-  const handleTextSubmit = (e: React.FormEvent) => {
+  const [textLoading, setTextLoading] = useState(false);
+
+  const handleTextSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (textInput.trim() && activeSessionId) {
-      // Add user message to chat
-      addMessage(activeSessionId, { role: 'user', content: textInput.trim() });
-      setTextInput('');
-      // TODO: Send text message to backend if text-to-speech is needed
+    const msg = textInput.trim();
+    if (!msg || !activeSessionId || textLoading) return;
+
+    // Add user message to chat immediately
+    addMessage(activeSessionId, { role: 'user', content: msg });
+    setTextInput('');
+    setTextLoading(true);
+
+    try {
+      const userId = localStorage.getItem('user_id');
+      const res = await fetch('http://localhost:8000/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: msg,
+          user_id: userId || undefined,
+          session_id: activeSessionId,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Server error' }));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+
+      if (data.response) {
+        addMessage(activeSessionId, { role: 'assistant', content: data.response });
+      }
+      if (data.rag_debug) {
+        setRagDebug(data.rag_debug);
+      }
+    } catch (err) {
+      console.error('Text chat error:', err);
+      addMessage(activeSessionId, {
+        role: 'assistant',
+        content: 'Sorry, I couldn\'t process your message. Please try again.',
+      });
+    } finally {
+      setTextLoading(false);
     }
   };
 
@@ -297,15 +335,15 @@ export default function ChatPage() {
                   onChange={e => setTextInput(e.target.value)}
                   placeholder="Type your question..."
                   className="bg-secondary border-border text-foreground placeholder:text-muted-foreground"
-                  disabled={isListening}
+                  disabled={isListening || textLoading}
                 />
                 <Button
                   type="submit"
                   size="icon"
-                  disabled={!textInput.trim() || isListening}
+                  disabled={!textInput.trim() || isListening || textLoading}
                   className="bg-primary text-primary-foreground hover:bg-primary/80 shrink-0"
                 >
-                  <Send className="w-4 h-4" />
+                  {textLoading ? <Loader className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 </Button>
               </form>
             </div>

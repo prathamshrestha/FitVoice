@@ -6,7 +6,7 @@
 export interface VoiceResponse {
   text: string;
   llm_response: string;
-  audio: string; // base64-encoded audio
+  audio?: string; // base64-encoded audio (absent if TTS unavailable)
   rag_debug?: {
     rag_available: boolean;
     rag_used: boolean;
@@ -194,7 +194,7 @@ class VoiceApiClientImpl implements VoiceApiClient {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: false,
+          autoGainControl: true,
         },
       });
 
